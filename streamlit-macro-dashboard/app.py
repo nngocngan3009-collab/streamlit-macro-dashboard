@@ -4,7 +4,7 @@ import ssl
 import certifi
 ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 # -----------------------------------
-
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,12 +26,17 @@ st.markdown("---")
 # --- 2. HÀM TẢI DỮ LIỆU TỪ FILE CSV ---
 @st.cache_data
 def load_data():
-    """Tải dữ liệu từ file macro_data.csv"""
+    """Tải dữ liệu từ file macro_data.csv (cùng thư mục với app.py)"""
+    base_dir = Path(__file__).resolve().parent
+    csv_path = base_dir / "macro_data.csv"
     try:
-        df = pd.read_csv("macro_data.csv", na_values="N/A")
+        df = pd.read_csv(csv_path, na_values="N/A")
         return df
     except FileNotFoundError:
-        st.error("Lỗi: Không tìm thấy file `macro_data.csv`. Vui lòng đảm bảo file này nằm cùng thư mục với `app.py`.")
+        st.error(
+            f"Lỗi: Không tìm thấy file '{csv_path.name}'. "
+            f"Đường dẫn đang tìm: {csv_path}"
+        )
         return pd.DataFrame() 
 
 # Tải toàn bộ dữ liệu
