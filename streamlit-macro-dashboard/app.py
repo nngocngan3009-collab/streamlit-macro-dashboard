@@ -388,7 +388,7 @@ with tab5:
             Tóm tắt ngắn gọn bối cảnh kinh tế của {country} trong giai đoạn được cung cấp. Nêu bật các chỉ số chính và mức trung bình của chúng.
 
             **2. Xu hướng nổi bật & Biến động:**
-            Phân tích các xu hướng tăng/giảm rõ rệt nhất (ví dụ: GDP, Xuất khẩu). Chỉ ra những năm có biến động mạnh nhất (ví dụ: Lạm phát) và giải thích ngắn gọn nguyên nhân nếu có thể.
+            Phân tích các xu hướng tăng/giảm rõ rệt nhất (ví dụ: GDP, Xuất khẩu). Chỉ ra những năm có biến động mạnh nhất (ví dụ: Lạm phát) và giải thích ngắn gọn nguyên nhân nếu có thể
 
             **3. Tương quan đáng chú ý:**
             Chỉ ra các mối tương quan thú vị (ví dụ: Tăng trưởng GDP và FDI, Lạm phát và Lãi suất...). Diễn giải ý nghĩa của các mối tương quan này.
