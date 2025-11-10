@@ -197,7 +197,7 @@ with st.sidebar:
                 st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
-    y_from, y_to = st.slider("Khoảng năm", 1960, 2025, DEFAULT_DATE_RANGE)
+    y_from, y_to = st.slider("Khoảng năm", 1995, 2025, DEFAULT_DATE_RANGE)
     na_method = st.selectbox(
         "Xử lý N/A",
         [
