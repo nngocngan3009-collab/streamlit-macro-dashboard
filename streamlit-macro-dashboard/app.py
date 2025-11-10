@@ -341,7 +341,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank")
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
