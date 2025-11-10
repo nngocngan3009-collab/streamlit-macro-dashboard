@@ -171,19 +171,19 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 # =========================
 
 st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
-st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô bằng AI")
+st.title("World Bank (WDI) — Bản đã sửa theo yêu cầu")
 st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
     st.header("🔧 Công cụ")
     # Quốc gia
-    country_raw = st.text_input("Điền Quốc gia", value="VN")
+    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
 
     # Tìm indicator
     st.subheader("Tìm chỉ số (WDI)")
     kw = st.text_input("Từ khoá", value="GDP")
-    top_n = st.number_input("Top", 1, 500, 10, 1)
+    top_n = st.number_input("Top", 1, 500, 50, 1)
     do_search = st.button("🔍 Tìm indicator")
 
     if do_search:
@@ -197,7 +197,7 @@ with st.sidebar:
                 st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
-    y_from, y_to = st.slider("Khoảng năm", 1995, 2025, DEFAULT_DATE_RANGE)
+    y_from, y_to = st.slider("Khoảng năm", 1960, 2025, DEFAULT_DATE_RANGE)
     na_method = st.selectbox(
         "Xử lý N/A",
         [
@@ -341,7 +341,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank"])
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
@@ -354,14 +354,13 @@ with tab5:
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
 Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
-Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang chuẩn bị một báo cáo tư vấn.
-                Dưới đây là bộ dữ liệu kinh tế vĩ mô
-                
-                Dựa trên bộ dữ liệu này, hãy thực hiện phân tích chi tiết cho đối tượng là: **{target_audience}**.
-                Cấu trúc báo cáo của bạn phải tuân thủ nghiêm ngặt 5 phần sau:
 
-                **1. Bối cảnh & Dữ liệu chính:**
-                Tóm tắt ngắn gọn bối cảnh kinh tế của {country} trong giai đoạn được cung cấp. Nêu bật các chỉ số chính và mức trung bình của chúng.
+{data_csv}
+
+Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng : {target_audience}.
+Trình bày ngắn gọn theo gạch đầu dòng
+**1. Bối cảnh & Dữ liệu chính:**
+                Tóm tắt ngắn gọn bối cảnh kinh tế.Nêu bật các chỉ số chính và mức trung bình của chúng.
 
                 **2. Xu hướng nổi bật & Biến động:**
                 Phân tích các xu hướng tăng/giảm rõ rệt nhất (ví dụ: GDP, Xuất khẩu). Chỉ ra những năm có biến động mạnh nhất (ví dụ: Lạm phát) và giải thích ngắn gọn nguyên nhân nếu có thể.
@@ -369,19 +368,10 @@ Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang ch
                 **3. Tương quan đáng chú ý:**
                 Chỉ ra các mối tương quan thú vị (ví dụ: Tăng trưởng GDP và FDI, Lạm phát và Lãi suất...). Diễn giải ý nghĩa của các mối tương quan này.
 
-                **4. Kiến nghị cho đối tượng: {target_audience}**
-                Cung cấp 3-4 kiến nghị chiến lược, cụ thể, hữu ích và trực tiếp liên quan đến đối tượng **{audience}** dựa trên các xu hướng đã phân tích.
-                (Lưu ý: Nếu đối tượng là "Ngân hàng Agribank", hãy tập trung kiến nghị vào bối cảnh của Việt Nam, ngay cả khi dữ liệu đang xem là của nước khác, hãy dùng nó để so sánh và đưa ra lời khuyên cho Agribank).
-
+                **4. Kiến nghị cho đối tượng: {audience}**
+                Cung cấp 3-4 kiến nghị chiến lược, cụ thể, hữu ích và trực tiếp liên quan đến đối tượng 
                 **5. Hành động thực thi (kèm KPI/Điều kiện kích hoạt):**
-                Từ các kiến nghị ở mục 4, đề xuất 1-2 hành động cụ thể mà **{audience}** có thể thực hiện ngay. Gắn chúng với một KPI (Chỉ số đo lường hiệu quả) hoặc một "Điều kiện kích hoạt" (Trigger).
-                
-                Hãy trình bày rõ ràng, súc tích và chuyên nghiệp.
-                """
-{data_csv}
-
-Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý khuyến nghị hành động cho đối tượng: {target_audience}.
-Trình bày ngắn gọn theo gạch đầu dòng.
+                Từ các kiến nghị ở mục 4, đề xuất 1-2 hành động cụ thể mà **{target_audience}** có thể thực hiện ngay. Gắn chúng với một KPI (Chỉ số đo lường hiệu quả) hoặc một "Điều kiện kích hoạt" (Trigger)..
 """
                     with st.spinner("AI đang phân tích…"):
                         resp = model.generate_content(prompt)
