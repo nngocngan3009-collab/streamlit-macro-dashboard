@@ -1,359 +1,380 @@
 # =========================
-# app.py — Streamlit + World Bank API (retry/backoff + cache)
+# Data360 (WB_WDI) Explorer — Streamlit full app
+# Giữ nguyên các tính năng: bảng dữ liệu, CSV, pivot/heatmap, biểu đồ, AI insight
+# Thay phần search & gọi data theo yêu cầu:
+#   - Search: POST /data360/searchv2 (WB_WDI + type 'indicator')
+#   - ID: full_id = WB_WDI_SP_POP_TOTL, pretty_id = SP.POP.TOTL
+#   - Data: GET /data360/data?DATABASE_ID=WB_WDI&INDICATOR=<full_id>&[REF_AREA=...]
+#   - Hỗ trợ chọn ALL indicators & ALL quốc gia
 # =========================
 
 import ssl, certifi
 ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 
+import os
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple, Optional
 import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
 import plotly.figure_factory as ff
-import google.generativeai as genai
+import numpy as np
 
-st.set_page_config(page_title="World Bank API — Chọn theo TÊN", layout="wide", initial_sidebar_state="expanded")
-st.title("Tải dữ liệu trực tiếp từ World Bank API")
-st.caption("Chọn **tên** chỉ số → hệ thống tự tra **ID** → gọi API World Bank (có retry/backoff tránh 429).")
+# (Tuỳ chọn) AI insight với Google Generative AI — set GOOGLE_API_KEY nếu muốn dùng
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
-WB_BASE = "https://api.worldbank.org/v2"
-DEFAULT_DATE_RANGE = (2004, 2024)
-HEADERS = {"User-Agent": "Streamlit-WB-Client/1.0 (contact: you@example.com)"}
+# =========================
+# Config
+# =========================
+DATA360_BASE_URL = os.environ.get("DATA360_BASE_URL", "https://api.data360.org")  # cập nhật theo môi trường của bạn
+SEARCH_ENDPOINT  = "/data360/searchv2"
+DATA_ENDPOINT    = "/data360/data"
 
-def _to_int(x, default=0):
-    try:
-        return int(x)
-    except (TypeError, ValueError):
-        return default
+HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
 
-def handle_na(df, na_method="Giữ nguyên (N/A)"):
-    """Xử lý NaN trong DataFrame theo phương án được chọn."""
-    if df is None or df.empty:
-        return df
-    if na_method == "Giữ nguyên (N/A)":
-        return df
-    elif na_method == "Điền giá trị gần nhất (Forward Fill)":
-        return df.ffill()
-    elif na_method == "Điền trung bình theo cột (Mean)":
-        return df.apply(lambda x: x.fillna(x.mean()), axis=0)
-    else:
-        return df
+REQ_TIMEOUT = 60
+MAX_RETRIES = 4
+BACKOFF     = 1.6
 
-def http_get_json(url: str, params: Dict[str, Any], retries: int = 4, backoff: float = 1.5):
-    attempt, last_err = 0, None
-    while attempt <= retries:
+DEFAULT_DATE_RANGE = (2004, 2024)  # chỉ phục vụ filter/biểu đồ phía client (response vẫn lấy đủ)
+
+# =========================
+# HTTP Helpers (retry + backoff)
+# =========================
+def _retry_sleep(attempt: int, base: float = BACKOFF) -> float:
+    return min(base ** attempt, 10.0)
+
+def http_post_json(url: str, json_body: Dict[str, Any]):
+    last_err = None
+    for attempt in range(MAX_RETRIES + 1):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=60)
+            r = requests.post(url, json=json_body, headers=HEADERS, timeout=REQ_TIMEOUT)
             if r.status_code in (429, 500, 502, 503, 504):
                 raise requests.HTTPError(f"{r.status_code} {r.reason}", response=r)
             r.raise_for_status()
             return r.json()
-        except requests.HTTPError as e:
-            last_err = e
-            if e.response is not None and e.response.status_code == 429:
-                ra = e.response.headers.get("Retry-After")
-                sleep_s = max(backoff, int(ra)) if ra and str(ra).isdigit() else backoff * (2 ** attempt)
-            else:
-                sleep_s = backoff * (2 ** attempt)
-            time.sleep(min(sleep_s, 12))
-            attempt += 1
-        except requests.RequestException as e:
-            last_err = e
-            time.sleep(backoff * (2 ** attempt))
-            attempt += 1
-    raise last_err
-
-@st.cache_data(show_spinner=False, ttl=24*3600)
-def wb_list_countries() -> pd.DataFrame:
-    out, page = [], 1
-    while True:
-        js = http_get_json(f"{WB_BASE}/country", {"format":"json","per_page":400,"page":page})
-        if not isinstance(js, list) or len(js) < 2:
-            break
-        meta, data = js
-        per_page, total = _to_int(meta.get("per_page",0)), _to_int(meta.get("total",0))
-        for c in data:
-            if (c.get("region") or {}).get("id") != "NA":
-                out.append({"code": c["id"], "name": c["name"]})
-        if page * per_page >= total:
-            break
-        page += 1
-    return pd.DataFrame(out).sort_values("name").reset_index(drop=True)
-
-@st.cache_data(show_spinner=False, ttl=24*3600)
-def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
-    results, page = [], 1
-    key = (keyword or "").strip().lower()
-    while page <= max_pages:
-        js = http_get_json(f"{WB_BASE}/indicator", {"format":"json","per_page":5000,"page":page})
-        if not isinstance(js, list) or len(js) < 2:
-            break
-        meta, data = js
-        per_page, total = _to_int(meta.get("per_page",0)), _to_int(meta.get("total",0))
-        for it in data:
-            _id, _name = it.get("id",""), it.get("name","")
-            if key and (key not in _name.lower() and key not in _id.lower()):
-                continue
-            results.append({
-                "id": _id,
-                "name": _name,
-                "unit": it.get("unit",""),
-                "source": (it.get("source",{}) or {}).get("value","")
-            })
-        if page * per_page >= total:
-            break
-        page += 1
-    return pd.DataFrame(results).drop_duplicates(subset=["id"]).sort_values("name").reset_index(drop=True)
-
-@st.cache_data(show_spinner=False, ttl=24*3600)
-def wb_fetch_series(country_code: str, indicator_id: str, year_from: int, year_to: int) -> pd.DataFrame:
-    """
-    Trả về DF cột: Year, Country, IndicatorID, Value
-    An toàn khi API trả về None / message lỗi.
-    """
-    js = http_get_json(
-        f"{WB_BASE}/country/{country_code}/indicator/{indicator_id}",
-        {"format": "json", "per_page": 20000, "date": f"{year_from}:{year_to}"}
-    )
-
-    # Sai định dạng → DF rỗng
-    if not isinstance(js, list) or len(js) < 2:
-        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
-
-    # Trường hợp API trả message lỗi
-    if isinstance(js[0], dict) and js[0].get("message"):
-        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
-
-    _, data = js
-
-    # Không có dữ liệu → DF rỗng
-    if not isinstance(data, list):
-        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
-
-    rows = []
-    for d in data:
-        rows.append({
-            "Year": int(d["date"]) if str(d.get("date","")).isdigit() else None,
-            "Country": (d.get("country") or {}).get("value", country_code),
-            "IndicatorID": (d.get("indicator") or {}).get("id", indicator_id),
-            "Value": d.get("value", None)
-        })
-
-    out = pd.DataFrame(rows).dropna(subset=["Year"])
-    if out.empty:
-        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
-    return out.sort_values("Year")
-
-def pivot_wide(df_long: pd.DataFrame, id_to_name: dict) -> pd.DataFrame:
-    if df_long is None or df_long.empty:
-        return pd.DataFrame()
-    df = df_long.copy()
-    df["IndicatorName"] = df["IndicatorID"].map(id_to_name).fillna(df["IndicatorID"])
-    wide = df.pivot_table(index=["Year","Country"], columns="IndicatorName", values="Value", aggfunc="first")
-    return wide.reset_index().sort_values(["Country","Year"])
-
-# ---------------- Sidebar ----------------
-st.sidebar.header("Thiết lập")
-countries_df = wb_list_countries()
-names = countries_df["name"].tolist()
-default_idx = names.index("Viet Nam") if "Viet Nam" in names else 0
-country_display = st.sidebar.selectbox(
-    "Quốc gia",
-    [f"{r.name} ({r.code})" for r in countries_df.itertuples()],
-    index=default_idx
-)
-country_code = country_display.split("(")[-1].strip(")")
-selected_country = country_display.split("(")[0].strip()
-
-min_year, max_year = DEFAULT_DATE_RANGE
-c1, c2 = st.sidebar.columns(2)
-y_from = c1.number_input("Từ năm", min_value=1960, max_value=2100, value=min_year, step=1)
-y_to   = c2.number_input("Đến năm", min_value=1960, max_value=2100, value=max_year, step=1)
-
-st.sidebar.subheader("Tìm & chọn chỉ số (theo *tên*)")
-kw = st.sidebar.text_input("Từ khoá (vd: GDP, CPI, inflation...)", value="GDP")
-
-# Xử lý N/A
-st.sidebar.subheader("Xử lý dữ liệu (Phương án xử lý N/A)")
-na_method = st.sidebar.selectbox(
-    "Phương án xử lý N/A (Áp dụng cho tất cả)",
-    ["Giữ nguyên (N/A)", "Điền giá trị gần nhất (Forward Fill)", "Điền trung bình theo cột (Mean)"]
-)
-
-if "ind_df_cache_api" not in st.session_state:
-    st.session_state["ind_df_cache_api"] = pd.DataFrame()
-
-if st.sidebar.button("🔍 Tìm chỉ số"):
-    with st.spinner("Đang tìm indicators..."):
-        st.session_state["ind_df_cache_api"] = wb_search_indicators(kw, max_pages=2)
-
-ind_df = st.session_state["ind_df_cache_api"]
-with st.sidebar.expander("Kết quả tìm thấy", expanded=False):
-    if ind_df.empty:
-        st.info("Nhấn **Tìm chỉ số** để tra cứu.")
-    else:
-        st.dataframe(ind_df[["id","name","unit","source"]], use_container_width=True, height=220)
-
-indicator_names = ind_df["name"].tolist() if not ind_df.empty else []
-selected_indicator_names = st.sidebar.multiselect(
-    "Chọn **tên** chỉ số để lấy dữ liệu",
-    options=indicator_names,
-    default=indicator_names[:1] if indicator_names else []
-)
-name_to_id = {row["name"]: row["id"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
-id_to_name = {v: k for k, v in name_to_id.items()}
-
-tabs = st.tabs(["📊 Dữ liệu","📈 Biểu đồ","🧮 Thống kê","📥 Tải CSV","🤖 AI"])
-
-# == TAB 1: DỮ LIỆU ==
-with tabs[0]:
-    if st.button("📥 Lấy dữ liệu"):
-        if not selected_indicator_names:
-            st.warning("Chọn ít nhất một *tên* chỉ số.")
-            st.stop()
-
-        chosen_ids = [name_to_id[n] for n in selected_indicator_names if n in name_to_id]
-        all_long = []
-        with st.spinner(f"Tải {len(chosen_ids)} chỉ số cho {country_code}..."):
-            for ind_id in chosen_ids:
-                df_fetch = wb_fetch_series(country_code, ind_id, int(y_from), int(y_to))
-                if df_fetch is not None and not df_fetch.empty:
-                    all_long.append(df_fetch)
-                time.sleep(0.35)
-
-        if not all_long:
-            st.error("Không có dữ liệu phù hợp cho phạm vi năm/chỉ số đã chọn.")
-            st.stop()
-
-        df_long = pd.concat(all_long, ignore_index=True)
-        if df_long.empty:
-            st.error("Không có dữ liệu sau khi tổng hợp.")
-            st.stop()
-
-        df_wide = pivot_wide(df_long, id_to_name)
-        df_wide = handle_na(df_wide, na_method)
-        st.session_state["wb_df"] = df_wide
-
-        st.success("✅ Đã tải dữ liệu từ World Bank API.")
-        st.dataframe(df_wide.set_index("Year"), use_container_width=True)
-
-def _get_df():
-    return st.session_state.get("wb_df", pd.DataFrame())
-
-# == TAB 2: BIỂU ĐỒ ==
-with tabs[1]:
-    st.subheader("Biểu đồ")
-    df = _get_df()
-    if df.empty:
-        st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải.")
-    else:
-        df = handle_na(df, na_method)
-        cols = [c for c in df.columns if c not in ("Year", "Country")]
-        choose = st.multiselect("Chọn cột vẽ", options=cols, default=cols[:min(4, len(cols))])
-
-        if choose:
-            st.plotly_chart(px.line(df, x="Year", y=choose, title="Xu hướng"), use_container_width=True)
-
-            if len(choose) > 1:
-                # Chuẩn hoá dữ liệu số & loại cột toàn NaN
-                df_sel = df[choose].apply(pd.to_numeric, errors="coerce")
-                df_sel = df_sel.dropna(axis=1, how="all")
-
-                if df_sel.shape[1] >= 2:
-                    corr = df_sel.corr().fillna(0)
-                    hm = ff.create_annotated_heatmap(
-                        z=corr.values,
-                        x=corr.columns.tolist(),   # tránh lỗi Index truth value
-                        y=corr.index.tolist(),
-                        colorscale="Viridis",
-                        annotation_text=corr.round(2).values,
-                        showscale=True,
-                    )
-                    st.plotly_chart(hm, use_container_width=True)
-                else:
-                    st.info("Các cột được chọn không đủ dữ liệu số để tính tương quan.")
-
-# == TAB 3: THỐNG KÊ ==
-with tabs[2]:
-    st.subheader("Thống kê mô tả")
-    df = _get_df()
-    if df.empty:
-        st.info("Chưa có dữ liệu.")
-    else:
-        df = handle_na(df, na_method)
-        cols = [c for c in df.columns if c not in ("Year", "Country")]
-        if not cols:
-            st.info("Không có cột số để thống kê.")
-        else:
-            stats = df[cols].apply(pd.to_numeric, errors="coerce").describe().T
-            stats["CV"] = (stats["std"]/stats["mean"]).abs()
-            st.dataframe(
-                stats[["mean","std","min","50%","max","CV"]]
-                .rename(columns={"mean":"Mean","std":"Std","50%":"Median"}),
-                use_container_width=True
-            )
-
-# == TAB 4: TẢI CSV ==
-with tabs[3]:
-    st.subheader("Tải CSV")
-    df = _get_df()
-    if df.empty:
-        st.info("Chưa có dữ liệu.")
-    else:
-        st.download_button(
-            "📥 Tải CSV",
-            data=df.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"wb_{country_code}_{y_from}_{y_to}.csv",
-            mime="text/csv"
-        )
-
-# == TAB 5: AI PHÂN TÍCH VÀ TƯ VẤN ==
-with tabs[4]:
-    st.header("AI phân tích và tư vấn")
-    selected_start_year = int(y_from)
-    selected_end_year = int(y_to)
-    df_processed_sidebar = _get_df()
-    target_audience = "Ngân hàng Agribank"
-    st.subheader(f"Đối tượng tư vấn: {target_audience}")
-
-    def generate_ai_analysis(data_df: pd.DataFrame, country: str, audience: str):
-        try:
-            api_key = st.secrets["GEMINI_API_KEY"]
-            genai.configure(api_key=api_key)
-
-            model = genai.GenerativeModel('gemini-2.5-pro')
-            data_string = data_df.to_csv(index=False)
-
-            prompt_template = f"""
-            Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang chuẩn bị một báo cáo tư vấn.
-            Dưới đây là bộ dữ liệu kinh tế vĩ mô của **{country}** từ năm {selected_start_year} đến {selected_end_year}:
-
-            {data_string}
-
-            Dựa trên bộ dữ liệu này, hãy thực hiện phân tích chi tiết cho đối tượng là: **{audience}**.
-            Cấu trúc báo cáo của bạn phải tuân thủ nghiêm ngặt 5 phần sau:
-            ...
-            """
-            with st.spinner(f"AI đang phân tích {country} và tạo báo cáo cho {audience}..."):
-                response = model.generate_content(prompt_template)
-                return response.text
-
         except Exception as e:
-            msg = str(e)
-            if "GEMINI_API_KEY" in msg and "not found" in msg.lower():
-                st.error("Lỗi: Không tìm thấy GEMINI_API_KEY. Vui lòng thiết lập trong file .streamlit/secrets.toml")
-            elif "API key is invalid" in msg:
-                st.error("Lỗi: GEMINI_API_KEY không hợp lệ. Vui lòng kiểm tra lại trong file .streamlit/secrets.toml")
-            else:
-                st.error(f"Đã xảy ra lỗi khi gọi AI: {e}")
-            return None
+            last_err = e
+            time.sleep(_retry_sleep(attempt))
+    raise RuntimeError(f"POST {url} failed after retries: {last_err}")
 
-    if st.button(f"🚀 Sinh AI phân tích và tư vấn cho {target_audience}"):
-        if df_processed_sidebar.empty:
-            st.error("Không có dữ liệu để phân tích. Vui lòng chọn chỉ số ở các tab trước và nhấn 'Lấy dữ liệu'.")
+def http_get_json(url: str, params: Dict[str, Any]):
+    last_err = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=REQ_TIMEOUT)
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f"{r.status_code} {r.reason}", response=r)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_err = e
+            time.sleep(_retry_sleep(attempt))
+    raise RuntimeError(f"GET {url} failed after retries: {last_err}")
+
+# =========================
+# Search + ID helpers
+# =========================
+def cut_wb_id(full_id: str) -> str:
+    # WB_WDI_SP_POP_TOTL -> SP_POP_TOTL
+    return full_id[len("WB_WDI_"):] if full_id.startswith("WB_WDI_") else full_id
+
+def to_pretty_id(full_id: str) -> str:
+    # WB_WDI_SP_POP_TOTL -> SP.POP.TOTL
+    return cut_wb_id(full_id).replace("_", ".")
+
+@st.cache_data(show_spinner=False, ttl=600)
+def search_indicators(keyword: str, top: int = 25) -> List[Dict[str, Any]]:
+    """POST /data360/searchv2 — lọc WB_WDI + indicator; trả list {full_id, pretty_id, name, database_id}"""
+    url = f"{DATA360_BASE_URL}{SEARCH_ENDPOINT}"
+    body = {
+        "count": True,
+        "select": "series_description/idno, series_description/name, series_description/database_id",
+        "search": keyword,
+        "top": int(top),
+        "filter": "series_description/database_id eq 'WB_WDI' and type eq 'indicator'"
+    }
+    raw = http_post_json(url, body)
+
+    # Chuẩn hoá kết quả (tùy backend có thể là 'value' hoặc 'items')
+    rows = raw.get("value") or raw.get("items") or raw
+    if isinstance(rows, dict):
+        rows = rows.get("value") or rows.get("items") or []
+
+    results = []
+    for row in rows:
+        idno = row.get("series_description/idno")
+        name = row.get("series_description/name")
+        dbid = row.get("series_description/database_id")
+
+        if idno is None and isinstance(row.get("series_description"), dict):
+            sd = row["series_description"]
+            idno = sd.get("idno")
+            name = name or sd.get("name")
+            dbid = dbid or sd.get("database_id")
+
+        if not idno:
+            continue
+
+        results.append({
+            "full_id": idno,
+            "pretty_id": to_pretty_id(idno),
+            "name": name or idno,
+            "database_id": dbid or "WB_WDI",
+        })
+    return results
+
+# =========================
+# Data fetch
+# =========================
+@st.cache_data(show_spinner=False, ttl=600)
+def fetch_data(full_indicator_id: str, ref_area: Optional[str]) -> pd.DataFrame:
+    """
+    GET /data360/data?DATABASE_ID=WB_WDI&INDICATOR=<full>&[REF_AREA=...]
+    - Nếu ref_area None hoặc 'ALL' -> không gửi REF_AREA
+    Trả DataFrame có cột chuẩn nếu tìm thấy: REF_AREA, TIME_PERIOD, VALUE, INDICATOR
+    """
+    url = f"{DATA360_BASE_URL}{DATA_ENDPOINT}"
+    params = {"DATABASE_ID": "WB_WDI", "INDICATOR": full_indicator_id}
+    if ref_area and ref_area.upper() != "ALL":
+        params["REF_AREA"] = ref_area
+
+    raw = http_get_json(url, params)
+
+    # Chuẩn hoá: thử các dạng response thông dụng
+    if isinstance(raw, dict) and isinstance(raw.get("data"), list):
+        rows = raw["data"]
+    elif isinstance(raw, list):
+        rows = raw
+    else:
+        rows = raw.get("value") or raw.get("items") or []
+
+    df = pd.DataFrame(rows)
+
+    # Đoán tên cột: (tùy hệ thống Data360 của bạn—đổi nếu cần)
+    # Ưu tiên tên phổ biến:
+    col_ref = next((c for c in df.columns if c.upper() in {"REF_AREA", "COUNTRY", "AREA", "LOCATION"}), None)
+    col_time = next((c for c in df.columns if c.upper() in {"TIME_PERIOD", "TIME", "YEAR", "DATE"}), None)
+    col_val = next((c for c in df.columns if c.upper() in {"VALUE", "OBS_VALUE", "VAL", "DATA"}), None)
+
+    if df.empty:
+        return df
+
+    if col_ref is None or col_time is None or col_val is None:
+        # Nếu không map được thì cứ trả raw + thêm indicator cho có thông tin
+        df["indicator"] = full_indicator_id
+        return df
+
+    df = df.rename(columns={col_ref: "REF_AREA", col_time: "TIME_PERIOD", col_val: "VALUE"})
+    df["INDICATOR"] = full_indicator_id
+    return df[["REF_AREA", "TIME_PERIOD", "VALUE", "INDICATOR"]]
+
+def fetch_many(indicator_ids: List[str], ref_area: Optional[str]) -> pd.DataFrame:
+    frames = []
+    progress = st.progress(0.0, text="Đang tải dữ liệu…")
+    total = len(indicator_ids) if indicator_ids else 1
+    for i, iid in enumerate(indicator_ids, 1):
+        try:
+            df_i = fetch_data(iid, ref_area)
+            if not df_i.empty:
+                frames.append(df_i)
+        except Exception as e:
+            st.warning(f"Lỗi khi tải {iid}: {e}")
+        progress.progress(i/total, text=f"Đang tải {i}/{total}")
+    progress.empty()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+# =========================
+# Data utilities
+# =========================
+def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if method == "Giữ nguyên (N/A)":
+        return df
+    if method == "Điền 0":
+        return df.fillna(0)
+    if method == "Forward-fill theo quốc gia + indicator":
+        return df.sort_values(["REF_AREA","INDICATOR","TIME_PERIOD"]).groupby(["REF_AREA","INDICATOR"]).ffill()
+    if method == "Backward-fill theo quốc gia + indicator":
+        return df.sort_values(["REF_AREA","INDICATOR","TIME_PERIOD"]).groupby(["REF_AREA","INDICATOR"]).bfill()
+    return df
+
+def filter_year_range(df: pd.DataFrame, y_from: int, y_to: int) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    # TIME_PERIOD có thể là số hoặc chuỗi; cố gắng ép
+    t = pd.to_numeric(df["TIME_PERIOD"], errors="coerce")
+    mask = (t >= y_from) & (t <= y_to)
+    return df.loc[mask].copy()
+
+# =========================
+# UI
+# =========================
+st.set_page_config(page_title="Data360 — WB_WDI Explorer", layout="wide")
+st.title("🔎 Data360 — WB_WDI Explorer")
+st.caption("Giữ nguyên tính năng: bảng dữ liệu • CSV • pivot/heatmap • biểu đồ • AI insight.  Search/Data theo flow mới (Data360).")
+
+# --- Search zone
+with st.container():
+    c1, c2, c3 = st.columns([3,1,1])
+    with c1:
+        keyword = st.text_input("Từ khoá indicator (ví dụ: GDP, poverty…)", value="")
+    with c2:
+        top_n = st.number_input("Top kết quả", 1, 200, 25, 1)
+    with c3:
+        search_clicked = st.button("🔍 Tìm indicator (WB_WDI)")
+
+search_results: List[Dict[str, Any]] = []
+if search_clicked:
+    if not keyword.strip():
+        st.warning("Vui lòng nhập từ khoá.")
+    else:
+        with st.spinner("Đang tìm indicator…"):
+            search_results = search_indicators(keyword.strip(), int(top_n))
+        if not search_results:
+            st.info("Không tìm thấy indicator phù hợp.")
+
+if search_results:
+    st.subheader("Kết quả indicator")
+    st.dataframe(pd.DataFrame([{
+        "Indicator name": r["name"],
+        "WB_ID (full)": r["full_id"],
+        "WB_ID (pretty)": r["pretty_id"]
+    } for r in search_results]), use_container_width=True, hide_index=True)
+
+    st.markdown("**Chọn indicator** (hỗ trợ **ALL**)")
+
+    options = ["ALL"] + [f'{r["name"]} — {r["pretty_id"]}' for r in search_results]
+    picked = st.multiselect("Indicators", options, default=["ALL"])
+
+    if "ALL" in picked:
+        chosen_full_ids = [r["full_id"] for r in search_results]
+    else:
+        lookup = {f'{r["name"]} — {r["pretty_id"]}': r["full_id"] for r in search_results}
+        chosen_full_ids = [lookup[x] for x in picked if x in lookup]
+
+    st.markdown("---")
+
+    # Quốc gia: ALL hoặc mã đơn/đa (phân tách bằng dấu phẩy -> sẽ lặp fetch từng mã)
+    st.subheader("Quốc gia / Khu vực (REF_AREA)")
+    st.caption("Nhập **ALL** để lấy toàn bộ; hoặc nhập 1 hay nhiều mã (VD: VNM,USA,FRA).")
+    ref_area_raw = st.text_input("REF_AREA", value="ALL")
+
+    y_from, y_to = DEFAULT_DATE_RANGE
+    y_from, y_to = st.slider("Khoảng năm (lọc hiển thị, không ảnh hưởng request)", min_value=1960, max_value=2025, value=(y_from, y_to))
+
+    na_method = st.selectbox("Xử lý N/A", ["Giữ nguyên (N/A)", "Điền 0", "Forward-fill theo quốc gia + indicator", "Backward-fill theo quốc gia + indicator"])
+
+    tabs = st.tabs(["Dữ liệu", "Pivot & Heatmap", "Biểu đồ", "AI insight"])
+
+    # === Tab 1: Dữ liệu ===
+    with tabs[0]:
+        if st.button("📥 Lấy dữ liệu"):
+            if not chosen_full_ids:
+                st.warning("Chọn ít nhất 1 indicator (hoặc ALL).")
+                st.stop()
+
+            ref_tokens = [x.strip() for x in ref_area_raw.split(",") if x.strip()] if ref_area_raw.strip().upper() != "ALL" else ["ALL"]
+
+            frames = []
+            with st.spinner("Đang tải dữ liệu…"):
+                for ref in ref_tokens:
+                    if len(chosen_full_ids) == 1:
+                        frames.append(fetch_data(chosen_full_ids[0], ref))
+                    else:
+                        frames.append(fetch_many(chosen_full_ids, ref))
+
+            df = pd.concat([f for f in frames if f is not None and not f.empty], ignore_index=True) if frames else pd.DataFrame()
+            if df is None or df.empty:
+                st.info("Không có dữ liệu.")
+                st.stop()
+
+            # Lọc theo năm phía client
+            df = filter_year_range(df, y_from, y_to)
+
+            # Xử lý N/A
+            df = handle_na(df, na_method)
+
+            st.success(f"Số dòng: {len(df)}")
+            st.dataframe(df, use_container_width=True)
+
+            # CSV
+            csv = df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("💾 Tải CSV", data=csv, file_name="data360_wb_wdi.csv", mime="text/csv")
+
+            # Lưu tạm vào session state cho tab khác dùng
+            st.session_state["last_df"] = df
+
+    # === Tab 2: Pivot & Heatmap ===
+    with tabs[1]:
+        df: pd.DataFrame = st.session_state.get("last_df")
+        if df is None or df.empty:
+            st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải trước.")
         else:
-            ai_report = generate_ai_analysis(df_processed_sidebar, selected_country, target_audience)
-            if ai_report:
-                st.markdown(ai_report)
+            idx_cols = st.multiselect("Chọn chỉ mục (index) cho pivot", ["REF_AREA", "INDICATOR", "TIME_PERIOD"], default=["REF_AREA", "TIME_PERIOD"])
+            val_agg = st.selectbox("Hàm tổng hợp", ["mean", "sum", "min", "max", "median"], index=0)
+
+            try:
+                pt = pd.pivot_table(df, index=idx_cols, values="VALUE", aggfunc=val_agg)
+                st.dataframe(pt, use_container_width=True)
+
+                # Nếu pivot thành dạng REF_AREA x TIME_PERIOD -> heatmap
+                if set(idx_cols) == {"REF_AREA", "TIME_PERIOD"}:
+                    mat = pt.reset_index().pivot(index="REF_AREA", columns="TIME_PERIOD", values="VALUE")
+                    fig = ff.create_annotated_heatmap(
+                        z=np.array(mat.values, dtype=float),
+                        x=[str(x) for x in mat.columns],
+                        y=list(mat.index),
+                        showscale=True
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Không tạo được pivot: {e}")
+
+    # === Tab 3: Biểu đồ ===
+    with tabs[2]:
+        df: pd.DataFrame = st.session_state.get("last_df")
+        if df is None or df.empty:
+            st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải trước.")
+        else:
+            # Line chart theo thời gian, phân tách theo REF_AREA/INDICATOR
+            hue = st.selectbox("Tô màu theo", options=["REF_AREA", "INDICATOR"], index=0)
+            try:
+                fig = px.line(df.sort_values("TIME_PERIOD"), x="TIME_PERIOD", y="VALUE", color=hue, markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Không vẽ được biểu đồ: {e}")
+
+    # === Tab 4: AI insight ===
+    with tabs[3]:
+        df: pd.DataFrame = st.session_state.get("last_df")
+        if df is None or df.empty:
+            st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải trước.")
+        else:
+            st.caption("Tóm tắt nhanh bằng AI (nếu có GOOGLE_API_KEY).")
+            if genai is None or not os.environ.get("GOOGLE_API_KEY"):
+                st.info("Chưa cấu hình GOOGLE_API_KEY — bỏ qua AI insight.")
+            else:
+                try:
+                    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+                    model = genai.GenerativeModel("gemini-1.5-flash")
+                    # Giới hạn dữ liệu đưa vào prompt để nhanh
+                    sample = df.head(100).to_dict(orient="records")
+                    prompt = (
+                        "Bạn là chuyên gia dữ liệu. Hãy phân tích xu hướng chính, điểm bất thường, "
+                        "so sánh nhanh giữa quốc gia & chỉ số trong dữ liệu WB_WDI dưới đây. "
+                        "Đề xuất 2-3 insight hành động.\n\n"
+                        f"Dữ liệu mẫu (100 dòng): {sample}"
+                    )
+                    resp = model.generate_content(prompt)
+                    st.markdown(resp.text or "_Không có phản hồi_")
+                except Exception as e:
+                    st.warning(f"AI insight lỗi: {e}")
