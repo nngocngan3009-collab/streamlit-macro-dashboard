@@ -171,7 +171,7 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 # =========================
 
 st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
-st.title("World Bank (WDI) — Bản đã sửa theo yêu cầu")
+st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô kết hợp AI")
 st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
@@ -197,7 +197,7 @@ with st.sidebar:
                 st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
-    y_from, y_to = st.slider("Khoảng năm", 1960, 2025, DEFAULT_DATE_RANGE)
+    y_from, y_to = st.slider("Khoảng năm", 1995, 2025, DEFAULT_DATE_RANGE)
     na_method = st.selectbox(
         "Xử lý N/A",
         [
@@ -341,7 +341,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
@@ -368,7 +368,7 @@ Trình bày ngắn gọn theo gạch đầu dòng
                 **3. Tương quan đáng chú ý:**
                 Chỉ ra các mối tương quan thú vị (ví dụ: Tăng trưởng GDP và FDI, Lạm phát và Lãi suất...). Diễn giải ý nghĩa của các mối tương quan này.
 
-                **4. Kiến nghị cho đối tượng: {audience}**
+                **4. Kiến nghị cho đối tượng: {target_audience}**
                 Cung cấp 3-4 kiến nghị chiến lược, cụ thể, hữu ích và trực tiếp liên quan đến đối tượng 
                 **5. Hành động thực thi (kèm KPI/Điều kiện kích hoạt):**
                 Từ các kiến nghị ở mục 4, đề xuất 1-2 hành động cụ thể mà **{target_audience}** có thể thực hiện ngay. Gắn chúng với một KPI (Chỉ số đo lường hiệu quả) hoặc một "Điều kiện kích hoạt" (Trigger)..
