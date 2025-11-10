@@ -55,7 +55,6 @@ def http_get_json(url: str, params: Dict[str, Any]) -> Any:
 # =========================
 # Indicator utilities
 # =========================
-# WB chuẩn: NY.GDP.MKTP.CD, SP.POP.TOTL ... => CHỈ HOA + SỐ + DẤU CHẤM, không bắt đầu bằng số
 _VALID_WB_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)+$")
 
 
@@ -68,11 +67,6 @@ def is_valid_wb_id(candidate: str) -> bool:
 
 @st.cache_data(show_spinner=False, ttl=24*3600)
 def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
-    """
-    Tra cứu trực tiếp từ World Bank catalog (ổn định) và LOẠI các mã sai định dạng.
-    Chỉ lấy từ bộ dữ liệu **World Development Indicators (WDI)**.
-    Trả DF cột: id, name, unit, source
-    """
     results, page = [], 1
     key = (keyword or "").strip().lower()
     while page <= max_pages:
@@ -85,12 +79,10 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
         for it in (data or []):
             _id, _name = it.get("id", ""), it.get("name", "")
             _source = (it.get("source", {}) or {}).get("value", "")
-            # Giữ *chỉ* WDI
             if _source.strip() != "World Development Indicators":
                 continue
             if key and (key not in _name.lower() and key not in _id.lower()):
                 continue
-            # BỘ LỌC ID HỢP LỆ
             if not is_valid_wb_id(_id):
                 continue
             results.append({
@@ -110,16 +102,11 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
 # =========================
 @st.cache_data(show_spinner=False, ttl=1200)
 def wb_fetch_series(country_code: str, indicator_id: str, year_from: int, year_to: int) -> pd.DataFrame:
-    """
-    GET /v2/country/{country}/indicator/{id}?format=json&per_page=20000&date=Y1:Y2
-    Trả DF cột: Year, Country, IndicatorID, Value
-    """
     js = http_get_json(
         f"{WB_BASE}/country/{country_code}/indicator/{indicator_id}",
         {"format": "json", "per_page": 20000, "date": f"{int(year_from)}:{int(year_to)}"}
     )
 
-    # Sai cấu trúc → DF rỗng an toàn
     if not isinstance(js, list) or len(js) < 2:
         return pd.DataFrame(columns=["Year", "Country", "IndicatorID", "Value"])
     if isinstance(js[0], dict) and js[0].get("message"):
@@ -148,8 +135,7 @@ def pivot_wide(df_long: pd.DataFrame, use_friendly_name: bool, id_to_name: Dict[
     if use_friendly_name:
         df["IndicatorName"] = df["IndicatorID"].map(id_to_name).fillna(df["IndicatorID"])
     wide = df.pivot_table(index=["Year","Country"], columns=key_col, values="Value", aggfunc="first")
-    wide = wide.reset_index().sort_values(["Country","Year"])  # chuẩn hoá thứ tự
-    # Đổi tên cột Year -> Năm theo yêu cầu hiển thị
+    wide = wide.reset_index().sort_values(["Country","Year"])
     wide = wide.rename(columns={"Year": "Năm"})
     return wide
 
@@ -165,7 +151,6 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
     if method == "Điền 0":
         return df.fillna(0)
     if method == "Forward-fill theo Country + cột dữ liệu":
-        # ffill theo từng Country cho tất cả cột chỉ số
         cols = [c for c in df.columns if c not in ("Năm", "Country")]
         return (df.sort_values(["Country","Năm"]) \
                   .groupby("Country")[cols] \
@@ -193,7 +178,7 @@ st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua 
 with st.sidebar:
     st.header("🔧 Công cụ")
     # Quốc gia
-    country_raw = st.selectbox("Country (Chọn quốc gia)", ["Việt Nam (VNM)", "USA (USA)", "China (CHN)", "all"])
+    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
 
     # Tìm indicator
     st.subheader("Tìm chỉ số (WDI)")
@@ -254,7 +239,6 @@ with tab1:
         if not selected_indicator_names:
             st.warning("Chọn ít nhất một chỉ số.")
             st.stop()
-        # Chuẩn hoá quốc gia
         if country_raw.strip().upper() == "ALL":
             country_list = ["all"]
         else:
@@ -264,7 +248,6 @@ with tab1:
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
-        # FETCH
         all_long: List[pd.DataFrame] = []
         with st.spinner(f"Đang tải {len(chosen_ids)} chỉ số…"):
             for country in country_list:
@@ -282,10 +265,10 @@ with tab1:
         st.session_state["wb_df_wide"] = df_wide
         st.success("✅ Đã tải và hợp nhất dữ liệu.")
 
-    # Hiển thị bảng dữ liệu
     df_show = st.session_state.get("wb_df_wide", pd.DataFrame())
     if not df_show.empty:
         st.dataframe(df_show.set_index(["Country","Năm"]), use_container_width=True)
+
 
 def _get_df_wide() -> pd.DataFrame:
     return st.session_state.get("wb_df_wide", pd.DataFrame())
@@ -358,14 +341,27 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox(
-            "Đối tượng nhận tư vấn (AI)",
-            ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"]
-        )
-
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
             if st.button("🚀 Sinh AI phân tích"):
                 try:
-                    api
+                    api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
+                    genai.configure(api_key=api_key)
+                    model_name = "gemini-2.5-pro"
+                    model = genai.GenerativeModel(model_name)
+                    data_csv = df.to_csv(index=False)
+                    prompt = f"""
+Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
+
+{data_csv}
+
+Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
+Trình bày ngắn gọn theo gạch đầu dòng.
+"""
+                    with st.spinner("AI đang phân tích…"):
+                        resp = model.generate_content(prompt)
+                        st.markdown(resp.text or "_Không có phản hồi_")
+                except Exception as e:
+                    st.warning(f"AI lỗi: {e}")
