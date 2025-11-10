@@ -287,7 +287,6 @@ with tab1:
     if not df_show.empty:
         st.dataframe(df_show.set_index(["Country","Năm"]), use_container_width=True)
 
-
 def _get_df_wide() -> pd.DataFrame:
     return st.session_state.get("wb_df_wide", pd.DataFrame())
 
@@ -359,27 +358,14 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng nhận tư vấn (AI)", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
+        target_audience = st.selectbox(
+            "Đối tượng nhận tư vấn (AI)",
+            ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"]
+        )
+
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
             if st.button("🚀 Sinh AI phân tích"):
                 try:
-                    api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
-                    genai.configure(api_key=api_key)
-                    model_name = "gemini-2.5-pro"
-                    model = genai.GenerativeModel(model_name)
-                    data_csv = df.to_csv(index=False)
-                    prompt = f"""
-Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
-
-{data_csv}
-
-Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
-Trình bày ngắn gọn theo gạch đầu dòng.
-"""
-                    with st.spinner("AI đang phân tích…"):
-                        resp = model.generate_content(prompt)
-                        st.markdown(resp.text or "_Không có phản hồi_")
-                except Exception as e:
-                    st.warning(f"AI lỗi: {e}")
+                    api
