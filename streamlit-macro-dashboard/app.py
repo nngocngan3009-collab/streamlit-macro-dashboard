@@ -79,6 +79,7 @@ def is_valid_wb_id(candidate: str) -> bool:
 def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
     """
     Tra cứu trực tiếp từ World Bank catalog (ổn định) và LOẠI các mã sai định dạng.
+    Chỉ lấy từ bộ dữ liệu **World Development Indicators (WDI)**.
     Trả DF cột: id, name, unit, source
     """
     results, page = [], 1
@@ -92,6 +93,10 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
         total    = int((meta or {}).get("total", 0) or 0)
         for it in (data or []):
             _id, _name = it.get("id", ""), it.get("name", "")
+            _source = (it.get("source", {}) or {}).get("value", "")
+            # Giữ *chỉ* WDI
+            if _source.strip() != "World Development Indicators":
+                continue
             if key and (key not in _name.lower() and key not in _id.lower()):
                 continue
             # BỘ LỌC ID HỢP LỆ
@@ -101,7 +106,7 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
                 "id": _id,
                 "name": _name,
                 "unit": it.get("unit", ""),
-                "source": (it.get("source", {}) or {}).get("value", "")
+                "source": _source
             })
         if page * per_page >= total or per_page == 0:
             break
@@ -191,58 +196,31 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
 st.title("World Bank (WDI) — Bản đã sửa theo yêu cầu")
-st.caption("Tìm indicator (lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
+st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
-# 1) Quốc gia
-st.subheader("Chọn quốc gia / vùng (mã ISO-2/3, cách nhau bởi dấu phẩy)")
-country_raw = st.text_input("Country codes", value="VN")
+# ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
+with st.sidebar:
+    st.header("🔧 Công cụ")
+    # Quốc gia
+    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
 
-# 2) Tìm indicator
-st.markdown("---")
-c1, c2, c3 = st.columns([3,1,1])
-with c1:
-    kw = st.text_input("Từ khoá chỉ số (vd: GDP, CPI, inflation…)", value="GDP")
-with c2:
+    # Tìm indicator
+    st.subheader("Tìm chỉ số (WDI)")
+    kw = st.text_input("Từ khoá", value="GDP")
     top_n = st.number_input("Top", 1, 500, 50, 1)
-with c3:
     do_search = st.button("🔍 Tìm indicator")
 
-if do_search:
-    if not kw.strip():
-        st.warning("Nhập từ khoá trước khi tìm.")
-    else:
-        with st.spinner("Đang tìm indicators…"):
-            df_ind = wb_search_indicators(kw.strip(), max_pages=3)
-            if top_n:
-                df_ind = df_ind.head(int(top_n))
-            st.session_state["ind_search_df"] = df_ind
+    if do_search:
+        if not kw.strip():
+            st.warning("Nhập từ khoá trước khi tìm.")
+        else:
+            with st.spinner("Đang tìm indicators (WDI)…"):
+                df_ind = wb_search_indicators(kw.strip(), max_pages=3)
+                if top_n:
+                    df_ind = df_ind.head(int(top_n))
+                st.session_state["ind_search_df"] = df_ind
 
-ind_df = st.session_state.get("ind_search_df", pd.DataFrame())
-st.write("Kết quả tìm kiếm (đã lọc ID sai định dạng)")
-if ind_df.empty:
-    st.info("Nhấn **Tìm indicator** để tra cứu.")
-else:
-    st.dataframe(ind_df[["id","name","unit","source"]], height=260, use_container_width=True)
-
-# 3) Chọn indicators
-indicator_names = ind_df["name"].tolist() if not ind_df.empty else []
-selected_indicator_names = st.multiselect(
-    "Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)",
-    options=indicator_names,
-    default=indicator_names[:1] if indicator_names else []
-)
-name_to_id = {row["name"]: row["id"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
-id_to_name = {v: k for k, v in name_to_id.items()}
-
-st.markdown("---")
-
-# 4) Tabs
-TAB_TITLES = ["📊 Dữ liệu", "📈 Biểu đồ", "🧮 Thống kê", "📥 Xuất dữ liệu", "🤖 AI"]
-tab1, tab2, tab3, tab4, tab5 = st.tabs(TAB_TITLES)
-
-# == TAB 1: DỮ LIỆU ==
-with tab1:
-    st.subheader("Lấy dữ liệu từ World Bank API")
+    # Khoảng năm + xử lý NA
     y_from, y_to = st.slider("Khoảng năm", 1960, 2025, DEFAULT_DATE_RANGE)
     na_method = st.selectbox(
         "Xử lý N/A",
@@ -255,59 +233,79 @@ with tab1:
         index=0,
     )
 
-    if st.button("📥 Tải dữ liệu"):
+    # Nút tải dữ liệu
+    load_clicked = st.button("📥 Tải dữ liệu")
+
+# ===== Main area: Tabs riêng biệt =====
+TAB_TITLES = ["📊 Dữ liệu", "📈 Biểu đồ", "🧮 Thống kê", "📥 Xuất dữ liệu", "🤖 AI"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(TAB_TITLES)
+
+# Tải kết quả tìm kiếm để chọn indicator
+ind_df = st.session_state.get("ind_search_df", pd.DataFrame())
+name_to_id = {row["name"]: row["id"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
+id_to_name = {v: k for k, v in name_to_id.items()}
+indicator_names = ind_df["name"].tolist() if not ind_df.empty else []
+
+with tab1:
+    st.subheader("Chọn chỉ số từ kết quả tìm kiếm (WDI)")
+    if ind_df.empty:
+        st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Chỉ số hiển thị là từ WDI và đã lọc ID sai định dạng.")
+    else:
+        st.dataframe(ind_df[["id","name","unit","source"]], height=220, use_container_width=True)
+    selected_indicator_names = st.multiselect(
+        "Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)",
+        options=indicator_names,
+        default=indicator_names[:1] if indicator_names else []
+    )
+    use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
+
+    if load_clicked:
         if not selected_indicator_names:
             st.warning("Chọn ít nhất một chỉ số.")
             st.stop()
-
-        # Chuẩn hoá danh sách quốc gia
+        # Chuẩn hoá quốc gia
         if country_raw.strip().upper() == "ALL":
             country_list = ["all"]
         else:
             country_list = [c.strip() for c in country_raw.split(",") if c.strip()]
-
         chosen_ids = [name_to_id.get(n) for n in selected_indicator_names]
         chosen_ids = [cid for cid in chosen_ids if cid and is_valid_wb_id(cid)]
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
-
         # FETCH
         all_long: List[pd.DataFrame] = []
-        with st.spinner(f"Đang tải {len(chosen_ids)} chỉ số cho {', '.join(country_list)}…"):
+        with st.spinner(f"Đang tải {len(chosen_ids)} chỉ số…"):
             for country in country_list:
                 for ind_id in chosen_ids:
                     df_fetch = wb_fetch_series(country, ind_id, int(y_from), int(y_to))
                     if df_fetch is not None and not df_fetch.empty:
                         all_long.append(df_fetch)
-                    time.sleep(0.3)
-
+                    time.sleep(0.25)
         if not all_long:
             st.info("Không có dữ liệu phù hợp.")
             st.stop()
-
         df_long = pd.concat(all_long, ignore_index=True)
-        use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
         df_wide = pivot_wide(df_long, use_friendly_name=use_friendly, id_to_name=id_to_name)
         df_wide = handle_na(df_wide, na_method)
-
-        # Lưu session & hiển thị
         st.session_state["wb_df_wide"] = df_wide
         st.success("✅ Đã tải và hợp nhất dữ liệu.")
-        st.dataframe(df_wide.set_index(["Country", "Năm"]), use_container_width=True)
+
+    # Hiển thị bảng dữ liệu
+    df_show = st.session_state.get("wb_df_wide", pd.DataFrame())
+    if not df_show.empty:
+        st.dataframe(df_show.set_index(["Country","Năm"]), use_container_width=True)
 
 
 def _get_df_wide() -> pd.DataFrame:
     return st.session_state.get("wb_df_wide", pd.DataFrame())
 
-# == TAB 2: BIỂU ĐỒ ==
 with tab2:
     st.subheader("Biểu đồ xu hướng")
     df = _get_df_wide()
     if df.empty:
         st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải.")
     else:
-        # Chuẩn bị dữ liệu: chuyển về long để vẽ dễ hơn
         value_cols = [c for c in df.columns if c not in ("Năm", "Country")]
         df_long_plot = df.melt(id_vars=["Năm","Country"], value_vars=value_cols,
                                var_name="Indicator", value_name="Value")
@@ -316,10 +314,9 @@ with tab2:
             df_plot = df_long_plot[df_long_plot["Indicator"].isin(choose)].copy()
             fig = px.line(df_plot.sort_values(["Country","Indicator","Năm"]),
                           x="Năm", y="Value", color="Indicator", line_group="Country",
-                          facet_row=None, markers=True)
+                          markers=True)
             st.plotly_chart(fig, use_container_width=True)
 
-            # Heatmap tương quan (trên dữ liệu số)
             if len(choose) > 1:
                 df_sel = df[choose].apply(pd.to_numeric, errors="coerce")
                 df_sel = df_sel.dropna(axis=1, how="all")
@@ -334,7 +331,6 @@ with tab2:
                     )
                     st.plotly_chart(hm, use_container_width=True)
 
-# == TAB 3: THỐNG KÊ ==
 with tab3:
     st.subheader("Thống kê mô tả")
     df = _get_df_wide()
@@ -353,7 +349,6 @@ with tab3:
                 use_container_width=True
             )
 
-# == TAB 4: XUẤT DỮ LIỆU ==
 with tab4:
     st.subheader("Tải CSV")
     df = _get_df_wide()
@@ -367,7 +362,6 @@ with tab4:
             mime="text/csv",
         )
 
-# == TAB 5: AI ==
 with tab5:
     st.subheader("AI Insight (giữ logic nối AI như file gốc)")
     df = _get_df_wide()
@@ -382,16 +376,17 @@ with tab5:
                 try:
                     api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
                     genai.configure(api_key=api_key)
-                    # Ưu tiên model tương thích bản gốc
                     model_name = "gemini-2.5-pro"
                     model = genai.GenerativeModel(model_name)
                     data_csv = df.to_csv(index=False)
-
                     prompt = f"""
-                    Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):\n\n{data_csv}\n\n
-                    Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.\n
-                    Trình bày ngắn gọn theo gạch đầu dòng.
-                    """
+Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
+
+{data_csv}
+
+Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
+Trình bày ngắn gọn theo gạch đầu dòng.
+"""
                     with st.spinner("AI đang phân tích…"):
                         resp = model.generate_content(prompt)
                         st.markdown(resp.text or "_Không có phản hồi_")
