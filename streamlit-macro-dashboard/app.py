@@ -336,7 +336,7 @@ with tab4:
         )
 
 with tab5:
-    st.subheader("AI Insight (giữ logic nối AI như file gốc)")
+    st.subheader("AI Insight")
     df = _get_df_wide()
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
