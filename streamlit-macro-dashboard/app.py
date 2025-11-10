@@ -341,7 +341,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank")
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
@@ -354,7 +354,30 @@ with tab5:
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
 Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
+Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang chuẩn bị một báo cáo tư vấn.
+                Dưới đây là bộ dữ liệu kinh tế vĩ mô
+                
+                Dựa trên bộ dữ liệu này, hãy thực hiện phân tích chi tiết cho đối tượng là: **{target_audience}**.
+                Cấu trúc báo cáo của bạn phải tuân thủ nghiêm ngặt 5 phần sau:
 
+                **1. Bối cảnh & Dữ liệu chính:**
+                Tóm tắt ngắn gọn bối cảnh kinh tế của {country} trong giai đoạn được cung cấp. Nêu bật các chỉ số chính và mức trung bình của chúng.
+
+                **2. Xu hướng nổi bật & Biến động:**
+                Phân tích các xu hướng tăng/giảm rõ rệt nhất (ví dụ: GDP, Xuất khẩu). Chỉ ra những năm có biến động mạnh nhất (ví dụ: Lạm phát) và giải thích ngắn gọn nguyên nhân nếu có thể.
+
+                **3. Tương quan đáng chú ý:**
+                Chỉ ra các mối tương quan thú vị (ví dụ: Tăng trưởng GDP và FDI, Lạm phát và Lãi suất...). Diễn giải ý nghĩa của các mối tương quan này.
+
+                **4. Kiến nghị cho đối tượng: {target_audience}**
+                Cung cấp 3-4 kiến nghị chiến lược, cụ thể, hữu ích và trực tiếp liên quan đến đối tượng **{audience}** dựa trên các xu hướng đã phân tích.
+                (Lưu ý: Nếu đối tượng là "Ngân hàng Agribank", hãy tập trung kiến nghị vào bối cảnh của Việt Nam, ngay cả khi dữ liệu đang xem là của nước khác, hãy dùng nó để so sánh và đưa ra lời khuyên cho Agribank).
+
+                **5. Hành động thực thi (kèm KPI/Điều kiện kích hoạt):**
+                Từ các kiến nghị ở mục 4, đề xuất 1-2 hành động cụ thể mà **{audience}** có thể thực hiện ngay. Gắn chúng với một KPI (Chỉ số đo lường hiệu quả) hoặc một "Điều kiện kích hoạt" (Trigger).
+                
+                Hãy trình bày rõ ràng, súc tích và chuyên nghiệp.
+                """
 {data_csv}
 
 Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
