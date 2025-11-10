@@ -171,19 +171,19 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 # =========================
 
 st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
-st.title("World Bank (WDI) — Bản đã sửa theo yêu cầu")
+st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô bằng AI")
 st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
     st.header("🔧 Công cụ")
     # Quốc gia
-    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
+    country_raw = st.text_input("Điền Quốc gia", value="VN")
 
     # Tìm indicator
     st.subheader("Tìm chỉ số (WDI)")
     kw = st.text_input("Từ khoá", value="GDP")
-    top_n = st.number_input("Top", 1, 500, 50, 1)
+    top_n = st.number_input("Top", 1, 500, 10, 1)
     do_search = st.button("🔍 Tìm indicator")
 
     if do_search:
