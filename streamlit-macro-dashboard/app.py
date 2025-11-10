@@ -223,7 +223,14 @@ def get_data(country_code: str, indicator_ids: list, y0: int, y1: int) -> pd.Dat
     return wide
 
 if selected_indicator_ids and selected_end_year >= selected_start_year:
-    df_wide = get_data(country_code, selected_indicator_ids, selected_start_year, selected_end_year)
+   df_wide = get_data(
+    country_code,
+    selected_indicator_ids,
+    selected_start_year,
+    selected_end_year,
+    selected_country_name,   # <— thêm
+    handling_method          # <— thêm
+)
 else:
     df_wide = pd.DataFrame()
 
