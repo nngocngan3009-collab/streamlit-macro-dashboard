@@ -6,7 +6,7 @@ import ssl, certifi
 ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import streamlit as st
 import pandas as pd
 import requests
@@ -19,13 +19,8 @@ st.title("Tải dữ liệu trực tiếp từ World Bank API")
 st.caption("Chọn **tên** chỉ số → hệ thống tự tra **ID** → gọi API World Bank (có retry/backoff tránh 429).")
 
 WB_BASE = "https://api.worldbank.org/v2"
-DATA360_BASE = "https://dataapi.worldbank.org/data360"
 DEFAULT_DATE_RANGE = (2004, 2024)
 HEADERS = {"User-Agent": "Streamlit-WB-Client/1.0 (contact: you@example.com)"}
-DATA360_HEADERS = {
-    "User-Agent": HEADERS["User-Agent"],
-    "Accept": "application/json",
-}
 
 def _to_int(x, default=0):
     try:
@@ -70,66 +65,6 @@ def http_get_json(url: str, params: Dict[str, Any], retries: int = 4, backoff: f
             attempt += 1
     raise last_err
 
-def data360_request_json(
-    method: str,
-    endpoint: str,
-    *,
-    params: Optional[Dict[str, Any]] = None,
-    json_payload: Optional[Dict[str, Any]] = None,
-    retries: int = 4,
-    backoff: float = 1.5,
-):
-    """Generic helper for Data360 endpoints (supports both GET/POST)."""
-    attempt, last_err = 0, None
-    url = f"{DATA360_BASE}{endpoint}"
-    while attempt <= retries:
-        try:
-            resp = requests.request(
-                method,
-                url,
-                params=params,
-                json=json_payload,
-                headers=DATA360_HEADERS,
-                timeout=60,
-            )
-            if resp.status_code in (429, 500, 502, 503, 504):
-                raise requests.HTTPError(f"{resp.status_code} {resp.reason}", response=resp)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.HTTPError as e:
-            last_err = e
-            resp = getattr(e, "response", None)
-            if resp is not None and resp.status_code == 429:
-                ra = resp.headers.get("Retry-After")
-                sleep_s = max(backoff, int(ra)) if ra and str(ra).isdigit() else backoff * (2 ** attempt)
-            else:
-                sleep_s = backoff * (2 ** attempt)
-            time.sleep(min(sleep_s, 12))
-            attempt += 1
-        except requests.RequestException as e:
-            last_err = e
-            time.sleep(backoff * (2 ** attempt))
-            attempt += 1
-    raise last_err
-
-
-def _format_indicator_code(raw: str) -> str:
-    """Convert SP_POP_TOTL -> SP.POP.TOTL for display."""
-    cleaned = (raw or "").strip("_")
-    return cleaned.replace("_", ".")
-
-
-def _extract_indicator_parts(full_id: str) -> tuple[str, str]:
-    """
-    Split WB_WDI_SP_POP_TOTL -> ("WB_WDI", "SP_POP_TOTL").
-    Returns (database_id, short_indicator).
-    """
-    parts = (full_id or "").split("_", 2)
-    if len(parts) >= 3:
-        return "_".join(parts[:2]), parts[2]
-    return "", full_id or ""
-
-
 @st.cache_data(show_spinner=False, ttl=24*3600)
 def wb_list_countries() -> pd.DataFrame:
     out, page = [], 1
@@ -147,76 +82,69 @@ def wb_list_countries() -> pd.DataFrame:
         page += 1
     return pd.DataFrame(out).sort_values("name").reset_index(drop=True)
 
-@st.cache_data(show_spinner=False, ttl=6*3600)
-def wb_search_indicators(keyword: str, top: int = 40) -> pd.DataFrame:
-    """
-    Search indicators through Data360 searchv2 and keep only WB_WDI entries.
-    """
-    payload = {
-        "count": False,
-        "search": (keyword or "").strip(),
-        "select": "series_description/idno, series_description/name, series_description/database_id",
-        "top": max(5, top),
-    }
-    js = data360_request_json("POST", "/searchv2", json_payload=payload)
-    values = js.get("value", []) if isinstance(js, dict) else []
-    rows = []
-    for item in values:
-        sd = item.get("series_description") or {}
-        full_id = sd.get("idno") or item.get("series_description/idno", "")
-        database_id = sd.get("database_id") or item.get("series_description/database_id", "")
-        if database_id != "WB_WDI" or not full_id:
-            continue
-        short_id = _extract_indicator_parts(full_id)[1]
-        display_code = _format_indicator_code(short_id)
-        rows.append(
-            {
-                "id": full_id,
-                "wb_id": database_id,
-                "short_id": short_id,
-                "display_code": display_code,
-                "name": sd.get("name") or item.get("series_description/name", ""),
-            }
-        )
-    if not rows:
-        return pd.DataFrame(columns=["id", "wb_id", "short_id", "display_code", "name"])
-    return pd.DataFrame(rows).drop_duplicates(subset=["id"]).sort_values("name").reset_index(drop=True)
+@st.cache_data(show_spinner=False, ttl=24*3600)
+def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
+    results, page = [], 1
+    key = (keyword or "").strip().lower()
+    while page <= max_pages:
+        js = http_get_json(f"{WB_BASE}/indicator", {"format":"json","per_page":5000,"page":page})
+        if not isinstance(js, list) or len(js) < 2:
+            break
+        meta, data = js
+        per_page, total = _to_int(meta.get("per_page",0)), _to_int(meta.get("total",0))
+        for it in data:
+            _id, _name = it.get("id",""), it.get("name","")
+            if key and (key not in _name.lower() and key not in _id.lower()):
+                continue
+            results.append({
+                "id": _id,
+                "name": _name,
+                "unit": it.get("unit",""),
+                "source": (it.get("source",{}) or {}).get("value","")
+            })
+        if page * per_page >= total:
+            break
+        page += 1
+    return pd.DataFrame(results).drop_duplicates(subset=["id"]).sort_values("name").reset_index(drop=True)
 
-@st.cache_data(show_spinner=False, ttl=6*3600)
+@st.cache_data(show_spinner=False, ttl=24*3600)
 def wb_fetch_series(country_code: str, indicator_id: str, year_from: int, year_to: int) -> pd.DataFrame:
     """
-    Tr??? v??? DF c??Tt: Year, Country, IndicatorID, Value (Data360 / WB_WDI).
+    Trả về DF cột: Year, Country, IndicatorID, Value
+    An toàn khi API trả về None / message lỗi.
     """
-    params = {
-        "DATABASE_ID": "WB_WDI",
-        "INDICATOR": indicator_id,
-        "REF_AREA": country_code,
-        "TIME_PERIOD": f"{year_from}:{year_to}",
-    }
-    js = data360_request_json("GET", "/data", params=params)
-    values = js.get("value", []) if isinstance(js, dict) else []
-    rows = []
-    for entry in values:
-        ref_area = entry.get("REF_AREA")
-        period = str(entry.get("TIME_PERIOD", "")).strip()
-        if ref_area != country_code or not period:
-            continue
-        if not period[:4].isdigit():
-            continue
-        obs_val = _to_float(entry.get("OBS_VALUE"))
-        rows.append(
-            {
-                "Year": int(period[:4]),
-                "Country": country_code,
-                "IndicatorID": indicator_id,
-                "Value": obs_val,
-            }
-        )
-    if not rows:
-        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
-    out = pd.DataFrame(rows).dropna(subset=["Year"]).sort_values("Year")
-    return out
+    js = http_get_json(
+        f"{WB_BASE}/country/{country_code}/indicator/{indicator_id}",
+        {"format": "json", "per_page": 20000, "date": f"{year_from}:{year_to}"}
+    )
 
+    # Sai định dạng → DF rỗng
+    if not isinstance(js, list) or len(js) < 2:
+        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
+
+    # Trường hợp API trả message lỗi
+    if isinstance(js[0], dict) and js[0].get("message"):
+        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
+
+    _, data = js
+
+    # Không có dữ liệu → DF rỗng
+    if not isinstance(data, list):
+        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
+
+    rows = []
+    for d in data:
+        rows.append({
+            "Year": int(d["date"]) if str(d.get("date","")).isdigit() else None,
+            "Country": (d.get("country") or {}).get("value", country_code),
+            "IndicatorID": (d.get("indicator") or {}).get("id", indicator_id),
+            "Value": d.get("value", None)
+        })
+
+    out = pd.DataFrame(rows).dropna(subset=["Year"])
+    if out.empty:
+        return pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
+    return out.sort_values("Year")
 
 def pivot_wide(df_long: pd.DataFrame, id_to_name: dict) -> pd.DataFrame:
     if df_long is None or df_long.empty:
@@ -259,23 +187,14 @@ if "ind_df_cache_api" not in st.session_state:
 
 if st.sidebar.button("🔍 Tìm chỉ số"):
     with st.spinner("Đang tìm indicators..."):
-        st.session_state["ind_df_cache_api"] = wb_search_indicators(kw, top=40)
+        st.session_state["ind_df_cache_api"] = wb_search_indicators(kw, max_pages=2)
 
 ind_df = st.session_state["ind_df_cache_api"]
 with st.sidebar.expander("Kết quả tìm thấy", expanded=False):
     if ind_df.empty:
         st.info("Nhấn **Tìm chỉ số** để tra cứu.")
     else:
-        display_cols = (
-            ind_df[["display_code","name","wb_id","id"]]
-            .rename(columns={
-                "display_code": "Indicator",
-                "name": "M?? tA? ch??%",
-                "wb_id": "WB_ID",
-                "id": "Full ID"
-            })
-        )
-        st.dataframe(display_cols, use_container_width=True, height=240)
+        st.dataframe(ind_df[["id","name","unit","source"]], use_container_width=True, height=220)
 
 indicator_names = ind_df["name"].tolist() if not ind_df.empty else []
 selected_indicator_names = st.sidebar.multiselect(
@@ -438,5 +357,3 @@ with tabs[4]:
             ai_report = generate_ai_analysis(df_processed_sidebar, selected_country, target_audience)
             if ai_report:
                 st.markdown(ai_report)
-
-
