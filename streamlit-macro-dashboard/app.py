@@ -380,7 +380,7 @@ Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang ch
                 """
 {data_csv}
 
-Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
+Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý khuyến nghị hành động cho đối tượng: {target_audience}.
 Trình bày ngắn gọn theo gạch đầu dòng.
 """
                     with st.spinner("AI đang phân tích…"):
