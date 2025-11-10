@@ -37,6 +37,7 @@ DEFAULT_DATE_RANGE = (2000, 2024)
 def _sleep(attempt: int, base: float = BACKOFF) -> float:
     return min(base ** attempt, 12.0)
 
+
 def http_get_json(url: str, params: Dict[str, Any]) -> Any:
     last_err = None
     for attempt in range(MAX_RETRIES + 1):
@@ -57,11 +58,13 @@ def http_get_json(url: str, params: Dict[str, Any]) -> Any:
 # WB chuẩn: NY.GDP.MKTP.CD, SP.POP.TOTL ... => CHỈ HOA + SỐ + DẤU CHẤM, không bắt đầu bằng số
 _VALID_WB_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)+$")
 
+
 def is_valid_wb_id(candidate: str) -> bool:
     if not isinstance(candidate, str):
         return False
     c = candidate.strip()
     return bool(_VALID_WB_ID.match(c))
+
 
 @st.cache_data(show_spinner=False, ttl=24*3600)
 def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
@@ -136,6 +139,7 @@ def wb_fetch_series(country_code: str, indicator_id: str, year_from: int, year_t
     out = pd.DataFrame(rows).dropna(subset=["Year"]) if rows else pd.DataFrame(columns=["Year","Country","IndicatorID","Value"])
     return out.sort_values(["Country","IndicatorID","Year"]) if not out.empty else out
 
+
 def pivot_wide(df_long: pd.DataFrame, use_friendly_name: bool, id_to_name: Dict[str, str]) -> pd.DataFrame:
     if df_long is None or df_long.empty:
         return pd.DataFrame()
@@ -161,18 +165,19 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
     if method == "Điền 0":
         return df.fillna(0)
     if method == "Forward-fill theo Country + cột dữ liệu":
+        # ffill theo từng Country cho tất cả cột chỉ số
         cols = [c for c in df.columns if c not in ("Năm", "Country")]
-        return (df.sort_values(["Country","Năm"]) 
-                  .groupby("Country")[cols] 
-                  .ffill() 
-                  .reindex(df.index) 
+        return (df.sort_values(["Country","Năm"]) \
+                  .groupby("Country")[cols] \
+                  .ffill() \
+                  .reindex(df.index) \
                   .pipe(lambda d: df.assign(**{c: d[c] for c in cols})))
     if method == "Backward-fill theo Country + cột dữ liệu":
         cols = [c for c in df.columns if c not in ("Năm", "Country")]
-        return (df.sort_values(["Country","Năm"]) 
-                  .groupby("Country")[cols] 
-                  .bfill() 
-                  .reindex(df.index) 
+        return (df.sort_values(["Country","Năm"]) \
+                  .groupby("Country")[cols] \
+                  .bfill() \
+                  .reindex(df.index) \
                   .pipe(lambda d: df.assign(**{c: d[c] for c in cols})))
     return df
 
@@ -188,24 +193,7 @@ st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua 
 with st.sidebar:
     st.header("🔧 Công cụ")
     # Quốc gia
-    country_raw = st.selectbox(
-        'Chọn quốc gia',
-        options=[
-            'Vietnam (VNM)',
-            'United States (USA)',
-            'China (CHN)',
-            'India (IND)',
-            'Japan (JPN)',
-            'Germany (DEU)',
-            'France (FRA)',
-            'Brazil (BRA)',
-            'Russia (RUS)',
-            'Australia (AUS)',
-            'All'
-        ],
-        index=0,
-        format_func=lambda x: x.split(' ')[0]  # chỉ hiển thị tên quốc gia
-    )
+    country_raw = st.selectbox("Country (Chọn quốc gia)", ["Việt Nam (VNM)", "USA (USA)", "China (CHN)", "all"])
 
     # Tìm indicator
     st.subheader("Tìm chỉ số (WDI)")
@@ -237,7 +225,7 @@ with st.sidebar:
     )
 
     # Nút tải dữ liệu
-    load_clicked = st.button('📥 Tải dữ liệu', key='load_data_button')
+    load_clicked = st.button("📥 Tải dữ liệu")
 
 # ===== Main area: Tabs riêng biệt =====
 TAB_TITLES = ["📊 Dữ liệu", "📈 Biểu đồ", "🧮 Thống kê", "📥 Xuất dữ liệu", "🤖 AI"]
@@ -256,12 +244,11 @@ with tab1:
     else:
         st.dataframe(ind_df[["id","name","unit","source"]], height=220, use_container_width=True)
     selected_indicator_names = st.multiselect(
-        'Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)',
+        "Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)",
         options=indicator_names,
-        default=indicator_names,
-        help='Chọn tất cả nếu muốn dùng toàn bộ chỉ số'
+        default=indicator_names[:1] if indicator_names else []
     )
-    use_friendly = True  # Bỏ checkbox, mặc định lấy tên chỉ số làm tiêu đề cột
+    use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
 
     if load_clicked:
         if not selected_indicator_names:
@@ -299,6 +286,10 @@ with tab1:
     df_show = st.session_state.get("wb_df_wide", pd.DataFrame())
     if not df_show.empty:
         st.dataframe(df_show.set_index(["Country","Năm"]), use_container_width=True)
+
+
+def _get_df_wide() -> pd.DataFrame:
+    return st.session_state.get("wb_df_wide", pd.DataFrame())
 
 with tab2:
     st.subheader("Biểu đồ xu hướng")
@@ -363,46 +354,32 @@ with tab4:
         )
 
 with tab5:
-    st.header("AI phân tích và tư vấn")
-    target_audience = st.selectbox(
-        "Đối tượng tư vấn",
-        ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"]
-    )
+    st.subheader("AI Insight (giữ logic nối AI như file gốc)")
+    df = _get_df_wide()
+    if df.empty:
+        st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
+    else:
+        target_audience = st.selectbox("Đối tượng nhận tư vấn (AI)", ["Doanh nghiệp", "Ngân hàng Agribank", "Nhà đầu tư cá nhân", "Nhà hoạch định chính sách"])
+        if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
+            st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
+        else:
+            if st.button("🚀 Sinh AI phân tích"):
+                try:
+                    api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
+                    genai.configure(api_key=api_key)
+                    model_name = "gemini-2.5-pro"
+                    model = genai.GenerativeModel(model_name)
+                    data_csv = df.to_csv(index=False)
+                    prompt = f"""
+Bạn là chuyên gia kinh tế vĩ mô. Dữ liệu World Bank (định dạng wide):
 
-    def generate_ai_analysis(data_df, country, audience):
-        try:
-            api_key = st.secrets['GEMINI_API_KEY']
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            data_string = data_df.to_csv()
-            prompt_template = f'''
-            Bạn là một chuyên gia phân tích kinh tế vĩ mô hàng đầu, đang chuẩn bị một báo cáo tư vấn.
-            Dưới đây là bộ dữ liệu kinh tế vĩ mô của **{country}** từ năm {selected_start_year} đến {selected_end_year}:
+{data_csv}
 
-            {data_string}
-
-            Dựa trên bộ dữ liệu này, hãy thực hiện phân tích chi tiết cho đối tượng là: **{audience}**.
-            Cấu trúc báo cáo của bạn phải tuân thủ nghiêm ngặt 5 phần sau:
-
-            **1. Bối cảnh & Dữ liệu chính:**
-            Tóm tắt ngắn gọn bối cảnh kinh tế của {country} trong giai đoạn được cung cấp. Nêu bật các chỉ số chính và mức trung bình của chúng.
-
-            **2. Xu hướng nổi bật & Biến động:**
-            Phân tích các xu hướng tăng/giảm rõ rệt nhất (ví dụ: GDP, Xuất khẩu). Chỉ ra những năm có biến động mạnh nhất (ví dụ: Lạm phát) và giải thích ngắn gọn nguyên nhân nếu có thể
-
-            **3. Tương quan đáng chú ý:**
-            Chỉ ra các mối tương quan thú vị (ví dụ: Tăng trưởng GDP và FDI, Lạm phát và Lãi suất...). Diễn giải ý nghĩa của các mối tương quan này.
-
-            **4. Kiến nghị cho đối tượng: {audience}**
-            Cung cấp 3-4 kiến nghị chiến lược, cụ thể, hữu ích và trực tiếp liên quan đến đối tượng **{audience}** dựa trên các xu hướng đã phân tích.
-            (Lưu ý: Nếu đối tượng là "Ngân hàng Agribank", hãy tập trung kiến nghị vào bối cảnh của Việt Nam, ngay cả khi dữ liệu đang xem là của nước khác, hãy dùng nó để so sánh và đưa ra lời khuyên cho Agribank).
-
-            **5. Hành động thực thi (kèm KPI/Điều kiện kích hoạt):**
-            Từ các kiến nghị ở mục 4, đề xuất 1-2 hành động cụ thể mà **{audience}** có thể thực hiện ngay. Gắn chúng với một KPI (Chỉ số đo lường hiệu quả) hoặc một "Điều kiện kích hoạt" (Trigger).
-            Hãy trình bày rõ ràng, súc tích và chuyên nghiệp.
-            '''
-            with st.spinner('AI đang phân tích…'):
-                resp = model.generate_content(prompt_template)
-                st.markdown(resp.text or '_Không có phản hồi_')
-        except Exception as e:
-            st.warning(f'AI lỗi: {e}')
+Hãy tóm tắt xu hướng chính, điểm bất thường, và gợi ý 2–3 khuyến nghị hành động cho đối tượng: {target_audience}.
+Trình bày ngắn gọn theo gạch đầu dòng.
+"""
+                    with st.spinner("AI đang phân tích…"):
+                        resp = model.generate_content(prompt)
+                        st.markdown(resp.text or "_Không có phản hồi_")
+                except Exception as e:
+                    st.warning(f"AI lỗi: {e}")
