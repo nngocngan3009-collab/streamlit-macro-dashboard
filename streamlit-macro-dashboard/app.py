@@ -348,21 +348,20 @@ with tab1:
     if indicator_df.empty:
         st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Toàn bộ chỉ số hợp lệ từ World Bank sẽ được hiển thị tại đây.")
     else:
-        display_df = indicator_df[["id", "name"]].copy()
+        display_df = indicator_df[["id", "name", "source"]].copy()
         state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in indicator_df.iterrows()}
         display_df.insert(0, "Chọn", display_df["id"].map(state_filtered).fillna(False))
-        display_df.insert(1, "STT", range(1, len(display_df) + 1))
-        display_df = display_df.rename(columns={"name": "Tên chỉ tiêu"})
+        display_df = display_df.rename(columns={"name": "Tên chỉ tiêu", "source": "Nguồn"})
         editor_df = display_df.set_index("id")
         edited_df = st.data_editor(
-            editor_df[["Chọn", "STT", "Tên chỉ tiêu"]],
+            editor_df[["Chọn", "Tên chỉ tiêu", "Nguồn"]],
             hide_index=True,
             use_container_width=True,
             height=260,
             column_config={
                 "Chọn": st.column_config.CheckboxColumn("Chọn", help="Tick để thêm vào danh sách tải"),
-                "STT": st.column_config.NumberColumn("STT", disabled=True),
                 "Tên chỉ tiêu": st.column_config.Column("Tên chỉ tiêu"),
+                "Nguồn": st.column_config.Column("Nguồn"),
             },
         )
         updated_state = {ind_id: bool(row["Chọn"]) for ind_id, row in edited_df.iterrows()}
@@ -539,7 +538,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank"])
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank","Chủ Doanh nghiệp","Nhân viên Ngân hàng"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
@@ -547,7 +546,7 @@ with tab5:
                 try:
                     api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
                     genai.configure(api_key=api_key)
-                    model_name = "gemini-2.5-flash"
+                    model_name = "gemini-2.5-pro"
                     model = genai.GenerativeModel(model_name)
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
