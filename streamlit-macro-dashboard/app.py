@@ -30,6 +30,19 @@ MAX_RETRIES = 4
 BACKOFF     = 1.6
 DEFAULT_DATE_RANGE = (2000, 2024)
 
+COUNTRY_OPTIONS = [
+    ("Việt Nam (VN)", "VN"),
+    ("Hoa Kỳ (US)", "US"),
+    ("Nhật Bản (JP)", "JP"),
+    ("Singapore (SG)", "SG"),
+    ("Thái Lan (TH)", "TH"),
+    ("Hàn Quốc (KR)", "KR"),
+    ("Trung Quốc (CN)", "CN"),
+    ("Khu vực Euro (EUU)", "EUU"),
+    ("Toàn cầu (ALL)", "all"),
+]
+COUNTRY_LABEL_TO_CODE = dict(COUNTRY_OPTIONS)
+
 # =========================
 # Helpers (retry)
 # =========================
@@ -79,8 +92,6 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
         for it in (data or []):
             _id, _name = it.get("id", ""), it.get("name", "")
             _source = (it.get("source", {}) or {}).get("value", "")
-            if _source.strip() != "World Development Indicators":
-                continue
             if key and (key not in _name.lower() and key not in _id.lower()):
                 continue
             if not is_valid_wb_id(_id):
@@ -170,18 +181,30 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 # UI
 # =========================
 
-st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
+st.set_page_config(page_title="World Bank Indicators — Sửa python7", layout="wide")
 st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô kết hợp AI")
-st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
+st.caption("Tìm indicator (World Bank, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
     st.header("🔧 Công cụ")
     # Quốc gia
-    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
+    country_labels = [label for label, _ in COUNTRY_OPTIONS]
+    default_country = country_labels[0:1]
+    country_choices = st.multiselect(
+        "Chọn quốc gia (ISO code)",
+        options=country_labels,
+        default=default_country,
+        help="Có thể chọn nhiều quốc gia, mỗi lựa chọn đã hiển thị kèm mã ISO.",
+    )
+    extra_country_raw = st.text_input(
+        "Bổ sung mã quốc gia khác (tuỳ chọn, cách nhau bởi dấu phẩy)",
+        value="",
+        help="Dành cho trường hợp không có trong danh sách trên.",
+    )
 
     # Tìm indicator
-    st.subheader("Tìm chỉ số (WDI)")
+    st.subheader("Tìm chỉ số (World Bank)")
     kw = st.text_input("Từ khoá", value="GDP")
     top_n = st.number_input("Top", 1, 500, 50, 1)
     do_search = st.button("🔍 Tìm indicator")
@@ -190,14 +213,30 @@ with st.sidebar:
         if not kw.strip():
             st.warning("Nhập từ khoá trước khi tìm.")
         else:
-            with st.spinner("Đang tìm indicators (WDI)…"):
+            with st.spinner("Đang tìm indicators từ World Bank…"):
                 df_ind = wb_search_indicators(kw.strip(), max_pages=3)
                 if top_n:
                     df_ind = df_ind.head(int(top_n))
                 st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
-    y_from, y_to = st.slider("Khoảng năm", 1995, 2025, DEFAULT_DATE_RANGE)
+    col_from, col_to = st.columns(2)
+    with col_from:
+        y_from = st.number_input(
+            "Từ năm",
+            min_value=1960,
+            max_value=2035,
+            value=DEFAULT_DATE_RANGE[0],
+            step=1,
+        )
+    with col_to:
+        y_to = st.number_input(
+            "Đến năm",
+            min_value=1960,
+            max_value=2035,
+            value=DEFAULT_DATE_RANGE[1],
+            step=1,
+        )
     na_method = st.selectbox(
         "Xử lý N/A",
         [
@@ -209,8 +248,19 @@ with st.sidebar:
         index=0,
     )
 
-    # Nút tải dữ liệu
-    load_clicked = st.button("📥 Tải dữ liệu")
+selected_country_codes: List[str] = []
+for label in country_choices:
+    code = COUNTRY_LABEL_TO_CODE.get(label)
+    if code:
+        selected_country_codes.append(code)
+
+if extra_country_raw:
+    manual_codes = [c.strip() for c in extra_country_raw.split(",") if c.strip()]
+    selected_country_codes.extend(manual_codes)
+
+selected_country_codes = [c.upper() for c in selected_country_codes if c]
+seen = set()
+selected_country_codes = [c for c in selected_country_codes if not (c in seen or seen.add(c))]
 
 # ===== Main area: Tabs riêng biệt =====
 TAB_TITLES = ["📊 Dữ liệu", "📈 Biểu đồ", "🧮 Thống kê", "📥 Xuất dữ liệu", "🤖 AI"]
@@ -218,33 +268,67 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(TAB_TITLES)
 
 # Tải kết quả tìm kiếm để chọn indicator
 ind_df = st.session_state.get("ind_search_df", pd.DataFrame())
-name_to_id = {row["name"]: row["id"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
-id_to_name = {v: k for k, v in name_to_id.items()}
-indicator_names = ind_df["name"].tolist() if not ind_df.empty else []
+id_to_name = {row["id"]: row["name"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
 
 with tab1:
-    st.subheader("Chọn chỉ số từ kết quả tìm kiếm (WDI)")
+    st.subheader("Chọn chỉ số từ kết quả tìm kiếm")
+    selected_indicator_ids: List[str] = []
+    all_indicator_ids = ind_df["id"].tolist() if not ind_df.empty else []
+    current_state = st.session_state.get("indicator_selection", {})
+
     if ind_df.empty:
-        st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Chỉ số hiển thị là từ WDI và đã lọc ID sai định dạng.")
+        st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Toàn bộ chỉ số hợp lệ từ World Bank sẽ được hiển thị tại đây.")
     else:
-        st.dataframe(ind_df[["id","name","unit","source"]], height=220, use_container_width=True)
-    selected_indicator_names = st.multiselect(
-        "Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)",
-        options=indicator_names,
-        default=indicator_names[:1] if indicator_names else []
-    )
+        display_df = ind_df[["id", "name", "source"]].copy()
+        state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in ind_df.iterrows()}
+        display_df = display_df.rename(columns={"name": "Tên chỉ tiêu", "source": "Nguồn"})
+        display_df["Chọn"] = display_df["id"].map(state_filtered).fillna(False)
+        editor_df = display_df.set_index("id")
+        edited_df = st.data_editor(
+            editor_df[["Tên chỉ tiêu", "Nguồn", "Chọn"]],
+            hide_index=True,
+            use_container_width=True,
+            height=260,
+            column_config={
+                "Tên chỉ tiêu": st.column_config.Column("Tên chỉ tiêu"),
+                "Nguồn": st.column_config.Column("Nguồn"),
+                "Chọn": st.column_config.CheckboxColumn("Chọn", help="Tick để thêm vào danh sách tải"),
+            },
+        )
+        updated_state = {ind_id: bool(row["Chọn"]) for ind_id, row in edited_df.iterrows()}
+        st.session_state["indicator_selection"] = updated_state
+        selection_mode = st.radio(
+            "Phạm vi chỉ tiêu",
+            ["Theo lựa chọn", "All chỉ tiêu tìm thấy"],
+            horizontal=True,
+        )
+        if selection_mode == "All chỉ tiêu tìm thấy":
+            selected_indicator_ids = all_indicator_ids
+        else:
+            selected_indicator_ids = [ind_id for ind_id, checked in updated_state.items() if checked]
     use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
+    load_clicked = st.button(
+        "📥 Tải dữ liệu",
+        type="primary",
+        use_container_width=True,
+        disabled=ind_df.empty,
+    )
 
     if load_clicked:
-        if not selected_indicator_names:
-            st.warning("Chọn ít nhất một chỉ số.")
+        if y_from > y_to:
+            st.error("Năm bắt đầu phải nhỏ hơn hoặc bằng năm kết thúc.")
             st.stop()
-        if country_raw.strip().upper() == "ALL":
+        if not selected_indicator_ids:
+            st.warning("Chọn ít nhất một chỉ số (tick hoặc chọn All).")
+            st.stop()
+        if not selected_country_codes:
+            st.warning("Chọn ít nhất một quốc gia ở thanh bên trái.")
+            st.stop()
+        if "all" in [c.lower() for c in selected_country_codes]:
             country_list = ["all"]
         else:
-            country_list = [c.strip() for c in country_raw.split(",") if c.strip()]
-        chosen_ids = [name_to_id.get(n) for n in selected_indicator_names]
-        chosen_ids = [cid for cid in chosen_ids if cid and is_valid_wb_id(cid)]
+            country_list = selected_country_codes
+        chosen_ids = [cid for cid in selected_indicator_ids if cid and is_valid_wb_id(cid)]
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
@@ -263,6 +347,9 @@ with tab1:
         df_wide = pivot_wide(df_long, use_friendly_name=use_friendly, id_to_name=id_to_name)
         df_wide = handle_na(df_wide, na_method)
         st.session_state["wb_df_wide"] = df_wide
+        st.session_state["chart_defaults"] = [c for c in df_wide.columns if c not in ("Năm", "Country")]
+        st.session_state["last_selected_indicator_ids"] = chosen_ids
+        st.session_state["last_selected_indicator_names"] = [id_to_name.get(cid, cid) for cid in chosen_ids]
         st.success("✅ Đã tải và hợp nhất dữ liệu.")
 
     df_show = st.session_state.get("wb_df_wide", pd.DataFrame())
@@ -280,29 +367,50 @@ with tab2:
         st.info("Chưa có dữ liệu. Vào tab **Dữ liệu** để tải.")
     else:
         value_cols = [c for c in df.columns if c not in ("Năm", "Country")]
-        df_long_plot = df.melt(id_vars=["Năm","Country"], value_vars=value_cols,
-                               var_name="Indicator", value_name="Value")
-        choose = st.multiselect("Chọn chỉ số để vẽ", options=sorted(value_cols), default=value_cols[:min(4, len(value_cols))])
-        if choose:
-            df_plot = df_long_plot[df_long_plot["Indicator"].isin(choose)].copy()
-            fig = px.line(df_plot.sort_values(["Country","Indicator","Năm"]),
-                          x="Năm", y="Value", color="Indicator", line_group="Country",
-                          markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+        if not value_cols:
+            st.info("Không có cột dữ liệu để vẽ.")
+        else:
+            df_long_plot = df.melt(
+                id_vars=["Năm", "Country"],
+                value_vars=value_cols,
+                var_name="Indicator",
+                value_name="Value",
+            )
+            default_choices = st.session_state.get("chart_defaults", [])
+            default_choices = [c for c in default_choices if c in value_cols]
+            if not default_choices:
+                default_choices = value_cols[:min(4, len(value_cols))]
+            choose = st.multiselect(
+                "Chọn chỉ số để vẽ",
+                options=value_cols,
+                default=default_choices,
+            )
+            if choose:
+                st.session_state["chart_defaults"] = choose
+                df_plot = df_long_plot[df_long_plot["Indicator"].isin(choose)].copy()
+                fig = px.line(
+                    df_plot.sort_values(["Country", "Indicator", "Năm"]),
+                    x="Năm",
+                    y="Value",
+                    color="Indicator",
+                    line_group="Country",
+                    markers=True,
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-            if len(choose) > 1:
-                df_sel = df[choose].apply(pd.to_numeric, errors="coerce")
-                df_sel = df_sel.dropna(axis=1, how="all")
-                if df_sel.shape[1] >= 2:
-                    corr = df_sel.corr().fillna(0)
-                    hm = ff.create_annotated_heatmap(
-                        z=corr.values,
-                        x=corr.columns.tolist(),
-                        y=corr.index.tolist(),
-                        annotation_text=corr.round(2).values,
-                        showscale=True,
-                    )
-                    st.plotly_chart(hm, use_container_width=True)
+                if len(choose) > 1:
+                    df_sel = df[choose].apply(pd.to_numeric, errors="coerce")
+                    df_sel = df_sel.dropna(axis=1, how="all")
+                    if df_sel.shape[1] >= 2:
+                        corr = df_sel.corr().fillna(0)
+                        hm = ff.create_annotated_heatmap(
+                            z=corr.values,
+                            x=corr.columns.tolist(),
+                            y=corr.index.tolist(),
+                            annotation_text=corr.round(2).values,
+                            showscale=True,
+                        )
+                        st.plotly_chart(hm, use_container_width=True)
 
 with tab3:
     st.subheader("Thống kê mô tả")
