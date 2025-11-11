@@ -98,29 +98,6 @@ def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
     return df
 
 # =========================
-# Countries utilities (NEW)
-# =========================
-@st.cache_data(show_spinner=False, ttl=24*3600)
-def wb_list_countries() -> pd.DataFrame:
-    """Lấy danh sách quốc gia từ World Bank, loại bỏ nhóm 'Aggregates'."""
-    js = http_get_json(f"{WB_BASE}/country", {"format":"json","per_page":400})
-    if not isinstance(js, list) or len(js) < 2:
-        return pd.DataFrame(columns=["code","name"])
-    _, data = js
-    rows = []
-    for c in data or []:
-        # Loại bỏ 'Aggregates' (như 'World', 'High income'…)
-        region = (c.get("region") or {}).get("id", "")
-        if region == "NA":  # Aggregates
-            continue
-        code = c.get("iso2Code") or ""
-        name = c.get("name") or ""
-        if code and name:
-            rows.append({"code": code, "name": name, "label": f"{name} ({code})"})
-    df = pd.DataFrame(rows).sort_values("name").reset_index(drop=True)
-    return df
-
-# =========================
 # Fetch series
 # =========================
 @st.cache_data(show_spinner=False, ttl=1200)
@@ -175,17 +152,17 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
         return df.fillna(0)
     if method == "Forward-fill theo Country + cột dữ liệu":
         cols = [c for c in df.columns if c not in ("Năm", "Country")]
-        return (df.sort_values(["Country","Năm"])
-                  .groupby("Country")[cols]
-                  .ffill()
-                  .reindex(df.index)
+        return (df.sort_values(["Country","Năm"]) \
+                  .groupby("Country")[cols] \
+                  .ffill() \
+                  .reindex(df.index) \
                   .pipe(lambda d: df.assign(**{c: d[c] for c in cols})))
     if method == "Backward-fill theo Country + cột dữ liệu":
         cols = [c for c in df.columns if c not in ("Năm", "Country")]
-        return (df.sort_values(["Country","Năm"])
-                  .groupby("Country")[cols]
-                  .bfill()
-                  .reindex(df.index)
+        return (df.sort_values(["Country","Năm"]) \
+                  .groupby("Country")[cols] \
+                  .bfill() \
+                  .reindex(df.index) \
                   .pipe(lambda d: df.assign(**{c: d[c] for c in cols})))
     return df
 
@@ -197,39 +174,13 @@ st.set_page_config(page_title="World Bank WDI — Sửa python7", layout="wide")
 st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô kết hợp AI")
 st.caption("Tìm indicator (WDI, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
-# ===== Sidebar: Tool tìm indicator, khoảng năm (NHẬP), Xử lý N/A, Quốc gia =====
+# ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
     st.header("🔧 Công cụ")
+    # Quốc gia
+    country_raw = st.text_input("Country codes (ISO2/3, ',' tách)", value="VN")
 
-    # --- Quốc gia: danh sách + mã tuỳ chọn (NEW)
-    st.subheader("Quốc gia")
-    countries_df = wb_list_countries()
-    country_options = (["Tất cả quốc gia (ALL)"] +
-                       countries_df["label"].tolist())
-    country_labels = st.multiselect(
-        "Chọn quốc gia (có thể nhiều)",
-        options=country_options,
-        default=["Việt Nam (VN)"]
-    )
-    manual_codes = st.text_input("Thêm mã khác (tuỳ chọn, cách nhau bằng ',')", value="")
-
-    def _resolve_country_list(labels: List[str], manual: str) -> List[str]:
-        codes: List[str] = []
-        if any(lbl.startswith("Tất cả quốc gia") for lbl in labels):
-            return ["all"]
-        label_to_code = dict(zip(countries_df["label"], countries_df["code"]))
-        for lb in labels:
-            if lb in label_to_code:
-                codes.append(label_to_code[lb])
-        if manual.strip():
-            codes += [c.strip().upper() for c in manual.split(",") if c.strip()]
-        # loại trùng
-        codes = list(dict.fromkeys(codes))
-        return codes if codes else ["VN"]
-
-    country_list = _resolve_country_list(country_labels, manual_codes)
-
-    # --- Tìm indicator
+    # Tìm indicator
     st.subheader("Tìm chỉ số (WDI)")
     kw = st.text_input("Từ khoá", value="GDP")
     top_n = st.number_input("Top", 1, 500, 50, 1)
@@ -245,18 +196,8 @@ with st.sidebar:
                     df_ind = df_ind.head(int(top_n))
                 st.session_state["ind_search_df"] = df_ind
 
-    # --- Khoảng năm: nhập thay vì slider (NEW)
-    st.subheader("Khoảng năm")
-    col_y1, col_y2 = st.columns(2)
-    with col_y1:
-        y_from = st.number_input("Từ năm", min_value=1960, max_value=2025, value=int(DEFAULT_DATE_RANGE[0]), step=1)
-    with col_y2:
-        y_to = st.number_input("Đến năm", min_value=1960, max_value=2025, value=int(DEFAULT_DATE_RANGE[1]), step=1)
-    if y_from > y_to:
-        st.warning("⚠️ 'Từ năm' đang lớn hơn 'Đến năm' — sẽ tự hoán đổi giá trị khi tải dữ liệu.")
-        y_from, y_to = y_to, y_from
-
-    # --- Xử lý NA
+    # Khoảng năm + xử lý NA
+    y_from, y_to = st.slider("Khoảng năm", 1995, 2025, DEFAULT_DATE_RANGE)
     na_method = st.selectbox(
         "Xử lý N/A",
         [
@@ -267,6 +208,9 @@ with st.sidebar:
         ],
         index=0,
     )
+
+    # Nút tải dữ liệu
+    load_clicked = st.button("📥 Tải dữ liệu")
 
 # ===== Main area: Tabs riêng biệt =====
 TAB_TITLES = ["📊 Dữ liệu", "📈 Biểu đồ", "🧮 Thống kê", "📥 Xuất dữ liệu", "🤖 AI"]
@@ -284,49 +228,29 @@ with tab1:
         st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Chỉ số hiển thị là từ WDI và đã lọc ID sai định dạng.")
     else:
         st.dataframe(ind_df[["id","name","unit","source"]], height=220, use_container_width=True)
-
-    # --- Tuỳ chọn ALL indicators (NEW)
-    use_all_inds = st.checkbox("Dùng **tất cả** chỉ tiêu tìm thấy", value=False)
-
-    # --- Multiselect theo TÊN (giữ nguyên)
     selected_indicator_names = st.multiselect(
         "Chọn chỉ số theo TÊN (sẽ tự lắp ID vào API)",
         options=indicator_names,
-        default=indicator_names[:1] if (indicator_names and not use_all_inds) else []
+        default=indicator_names[:1] if indicator_names else []
     )
     use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
 
-    # --- Nút tải dữ liệu chuyển xuống đây (NEW)
-    load_clicked = st.button("📥 Tải dữ liệu")
-
     if load_clicked:
-        # Xác định danh sách indicator
-        if ind_df.empty:
-            st.warning("Chưa có danh sách chỉ số. Hãy tìm chỉ số ở thanh bên trước.")
+        if not selected_indicator_names:
+            st.warning("Chọn ít nhất một chỉ số.")
             st.stop()
-
-        if use_all_inds:
-            chosen_ids = [row["id"] for _, row in ind_df.iterrows() if is_valid_wb_id(row["id"])]
+        if country_raw.strip().upper() == "ALL":
+            country_list = ["all"]
         else:
-            if not selected_indicator_names:
-                st.warning("Chọn ít nhất một chỉ số hoặc bật 'Dùng tất cả chỉ tiêu'.")
-                st.stop()
-            chosen_ids = [name_to_id.get(n) for n in selected_indicator_names]
-            chosen_ids = [cid for cid in chosen_ids if cid and is_valid_wb_id(cid)]
-
+            country_list = [c.strip() for c in country_raw.split(",") if c.strip()]
+        chosen_ids = [name_to_id.get(n) for n in selected_indicator_names]
+        chosen_ids = [cid for cid in chosen_ids if cid and is_valid_wb_id(cid)]
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
-
-        # Xác định countries
-        if country_list == ["all"]:
-            countries_to_fetch = ["all"]
-        else:
-            countries_to_fetch = country_list
-
         all_long: List[pd.DataFrame] = []
         with st.spinner(f"Đang tải {len(chosen_ids)} chỉ số…"):
-            for country in countries_to_fetch:
+            for country in country_list:
                 for ind_id in chosen_ids:
                     df_fetch = wb_fetch_series(country, ind_id, int(y_from), int(y_to))
                     if df_fetch is not None and not df_fetch.empty:
