@@ -546,7 +546,7 @@ with tab5:
                 try:
                     api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
                     genai.configure(api_key=api_key)
-                    model_name = "gemini-2.5-pro"
+                    model_name = "gemini-2.5-flash"
                     model = genai.GenerativeModel(model_name)
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
