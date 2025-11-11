@@ -263,7 +263,7 @@ with st.sidebar:
     # Tìm indicator
     st.subheader("Tìm chỉ số (World Bank)")
     kw = st.text_input("Từ khoá", value="GDP")
-    top_n = st.number_input("Top", 1, 500, 50, 1)
+    top_n = st.number_input("Top", 1, 500, 10, 1)
     do_search = st.button("🔍 Tìm indicator")
 
     if do_search:
