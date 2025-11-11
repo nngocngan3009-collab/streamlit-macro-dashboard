@@ -246,7 +246,7 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="World Bank Indicators — Sửa python7", layout="wide")
 st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô kết hợp AI")
-st.caption("Tìm indicator (World Bank, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
+st.caption(" ")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
@@ -263,7 +263,7 @@ with st.sidebar:
     # Tìm indicator
     st.subheader("Tìm chỉ số (World Bank)")
     kw = st.text_input("Từ khoá", value="GDP")
-    top_n = st.number_input("Top", 1, 500, 50, 1)
+    top_n = st.number_input("Top", 1, 500, 10, 1)
     do_search = st.button("🔍 Tìm indicator")
 
     if do_search:
@@ -295,7 +295,7 @@ with st.sidebar:
             step=1,
         )
     na_method = st.selectbox(
-        "Xử lý N/A",
+        "Xử lý chỉ tiêu có dữ liệu N/A",
         [
             "Giữ nguyên (N/A)",
             "Điền 0",
@@ -340,7 +340,7 @@ id_to_name = {
 }
 
 with tab1:
-    st.subheader("Chọn chỉ số từ kết quả tìm kiếm")
+    st.subheader("Chọn chỉ số để tải dữ liệu")
     selected_indicator_ids: List[str] = []
     all_indicator_ids = indicator_df["id"].tolist() if not indicator_df.empty else []
     current_state = st.session_state.get("indicator_selection", {})
@@ -546,7 +546,7 @@ with tab5:
                 try:
                     api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
                     genai.configure(api_key=api_key)
-                    model_name = "gemini-2.5-pro"
+                    model_name = "gemini-2.5-flash"
                     model = genai.GenerativeModel(model_name)
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
