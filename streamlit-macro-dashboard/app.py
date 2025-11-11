@@ -40,6 +40,7 @@ COUNTRY_OPTIONS = [
     ("Trung Quốc (CN)", "CN"),
     ("Khu vực Euro (EUU)", "EUU"),
     ("Toàn cầu (ALL)", "all"),
+    ("ALL", "all"),
 ]
 COUNTRY_LABEL_TO_CODE = dict(COUNTRY_OPTIONS)
 
@@ -246,12 +247,6 @@ with st.sidebar:
         default=default_country,
         help="Có thể chọn nhiều quốc gia, mỗi lựa chọn đã hiển thị kèm mã ISO.",
     )
-    extra_country_raw = st.text_input(
-        "Bổ sung mã quốc gia khác (tuỳ chọn, cách nhau bởi dấu phẩy)",
-        value="",
-        help="Dành cho trường hợp không có trong danh sách trên.",
-    )
-
     # Tìm indicator
     st.subheader("Tìm chỉ số (World Bank)")
     kw = st.text_input("Từ khoá", value="GDP")
@@ -303,10 +298,6 @@ for label in country_choices:
     if code:
         selected_country_codes.append(code)
 
-if extra_country_raw:
-    manual_codes = [c.strip() for c in extra_country_raw.split(",") if c.strip()]
-    selected_country_codes.extend(manual_codes)
-
 selected_country_codes = [c.upper() for c in selected_country_codes if c]
 seen = set()
 selected_country_codes = [c for c in selected_country_codes if not (c in seen or seen.add(c))]
@@ -346,15 +337,17 @@ with tab1:
     else:
         display_df = indicator_df[["id", "name", "source"]].copy()
         state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in indicator_df.iterrows()}
+        display_df.insert(0, "STT", range(1, len(display_df) + 1))
         display_df = display_df.rename(columns={"name": "Tên chỉ tiêu", "source": "Nguồn"})
         display_df["Chọn"] = display_df["id"].map(state_filtered).fillna(False)
         editor_df = display_df.set_index("id")
         edited_df = st.data_editor(
-            editor_df[["Tên chỉ tiêu", "Nguồn", "Chọn"]],
+            editor_df[["STT", "Tên chỉ tiêu", "Nguồn", "Chọn"]],
             hide_index=True,
             use_container_width=True,
             height=260,
             column_config={
+                "STT": st.column_config.NumberColumn("STT", disabled=True),
                 "Tên chỉ tiêu": st.column_config.Column("Tên chỉ tiêu"),
                 "Nguồn": st.column_config.Column("Nguồn"),
                 "Chọn": st.column_config.CheckboxColumn("Chọn", help="Tick để thêm vào danh sách tải"),
@@ -371,7 +364,7 @@ with tab1:
             selected_indicator_ids = all_indicator_ids
         else:
             selected_indicator_ids = [ind_id for ind_id, checked in updated_state.items() if checked]
-    use_friendly = st.checkbox("Dùng tên chỉ số làm tiêu đề cột (thay vì ID)", value=False)
+    use_friendly = True
     load_clicked = st.button(
         "📥 Tải dữ liệu",
         type="primary",
@@ -396,12 +389,17 @@ with tab1:
         normalized_selection: List[str] = []
         for raw_id in selected_indicator_ids:
             mapped = raw_to_normalized.get(raw_id)
-            if mapped and mapped not in normalized_selection:
+            if mapped:
                 normalized_selection.append(mapped)
         chosen_ids = [cid for cid in normalized_selection if cid and is_valid_wb_id(cid)]
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
+        ordered_display_columns: List[str] = []
+        for cid in chosen_ids:
+            col_name = id_to_name.get(cid, cid) if use_friendly else cid
+            if col_name not in ordered_display_columns:
+                ordered_display_columns.append(col_name)
         all_long: List[pd.DataFrame] = []
         with st.spinner(f"Đang tải {len(chosen_ids)} chỉ số…"):
             for country in country_list:
@@ -416,6 +414,16 @@ with tab1:
         df_long = pd.concat(all_long, ignore_index=True)
         df_wide = pivot_wide(df_long, use_friendly_name=use_friendly, id_to_name=id_to_name)
         df_wide = handle_na(df_wide, na_method)
+        for col in ordered_display_columns:
+            if col not in df_wide.columns:
+                df_wide[col] = None
+        base_cols = ["Country", "Năm"]
+        for base in base_cols:
+            if base not in df_wide.columns:
+                df_wide[base] = None
+        base_cols_present = [c for c in base_cols if c in df_wide.columns]
+        other_cols = [c for c in df_wide.columns if c not in base_cols_present + ordered_display_columns]
+        df_wide = df_wide[base_cols_present + ordered_display_columns + other_cols]
         st.session_state["wb_df_wide"] = df_wide
         st.session_state["chart_defaults"] = [c for c in df_wide.columns if c not in ("Năm", "Country")]
         st.session_state["last_selected_indicator_ids"] = chosen_ids
