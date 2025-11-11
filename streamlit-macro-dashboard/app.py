@@ -78,6 +78,32 @@ def is_valid_wb_id(candidate: str) -> bool:
     return bool(_VALID_WB_ID.match(c))
 
 
+def normalize_indicator_id(raw_id: str, database_id: Optional[str] = None) -> Optional[str]:
+    """Loại bỏ tiền tố dataset (vd: WB_WDI_) và chuyển '_' thành '.'."""
+    if not isinstance(raw_id, str):
+        return None
+    code = raw_id.strip().upper()
+    if not code:
+        return None
+    db_prefix = (database_id or "").strip().upper()
+    if db_prefix and code.startswith(f"{db_prefix}_"):
+        code = code[len(db_prefix) + 1 :]
+    elif code.startswith("WB_"):
+        parts = code.split("_", 2)
+        if len(parts) == 3:
+            code = parts[2]
+        elif len(parts) > 3:
+            code = "_".join(parts[2:])
+        else:
+            code = code.replace("WB_", "", 1)
+    normalized = code.replace("_", ".").strip(".")
+    while ".." in normalized:
+        normalized = normalized.replace("..", ".")
+    if not normalized or not is_valid_wb_id(normalized):
+        return None
+    return normalized
+
+
 @st.cache_data(show_spinner=False, ttl=24*3600)
 def wb_search_indicators(keyword: str, max_pages: int = 2, top: int = 50) -> pd.DataFrame:
     """Vector search qua World Bank Data360 để lấy series mô tả."""
@@ -110,18 +136,20 @@ def wb_search_indicators(keyword: str, max_pages: int = 2, top: int = 50) -> pd.
         _id = sd.get("idno", "").strip()
         _name = sd.get("name", "").strip()
         _source = sd.get("database_id", "").strip()
-        if not _id or not _name or not is_valid_wb_id(_id):
+        normalized = normalize_indicator_id(_id, _source)
+        if not _id or not _name or not normalized:
             continue
         results.append(
             {
                 "id": _id,
+                "normalized_id": normalized,
                 "name": _name,
                 "unit": "",
                 "source": _source,
             }
         )
     if not results:
-        return pd.DataFrame(columns=["id", "name", "unit", "source"])
+        return pd.DataFrame(columns=["id", "normalized_id", "name", "unit", "source"])
     return (
         pd.DataFrame(results)
         .drop_duplicates(subset=["id"])
@@ -289,19 +317,35 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(TAB_TITLES)
 
 # Tải kết quả tìm kiếm để chọn indicator
 ind_df = st.session_state.get("ind_search_df", pd.DataFrame())
-id_to_name = {row["id"]: row["name"] for _, row in (ind_df if not ind_df.empty else pd.DataFrame()).iterrows()}
+if not ind_df.empty and "normalized_id" not in ind_df.columns:
+    ind_df["normalized_id"] = ind_df["id"].apply(lambda x: normalize_indicator_id(x))
+indicator_df = (
+    ind_df.dropna(subset=["normalized_id"])
+    if not ind_df.empty and "normalized_id" in ind_df.columns
+    else ind_df
+)
+raw_to_normalized = {
+    row["id"]: row.get("normalized_id")
+    for _, row in (indicator_df if not indicator_df.empty else pd.DataFrame()).iterrows()
+    if row.get("normalized_id")
+}
+id_to_name = {
+    row.get("normalized_id"): row["name"]
+    for _, row in (indicator_df if not indicator_df.empty else pd.DataFrame()).iterrows()
+    if row.get("normalized_id")
+}
 
 with tab1:
     st.subheader("Chọn chỉ số từ kết quả tìm kiếm")
     selected_indicator_ids: List[str] = []
-    all_indicator_ids = ind_df["id"].tolist() if not ind_df.empty else []
+    all_indicator_ids = indicator_df["id"].tolist() if not indicator_df.empty else []
     current_state = st.session_state.get("indicator_selection", {})
 
-    if ind_df.empty:
+    if indicator_df.empty:
         st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Toàn bộ chỉ số hợp lệ từ World Bank sẽ được hiển thị tại đây.")
     else:
-        display_df = ind_df[["id", "name", "source"]].copy()
-        state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in ind_df.iterrows()}
+        display_df = indicator_df[["id", "name", "source"]].copy()
+        state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in indicator_df.iterrows()}
         display_df = display_df.rename(columns={"name": "Tên chỉ tiêu", "source": "Nguồn"})
         display_df["Chọn"] = display_df["id"].map(state_filtered).fillna(False)
         editor_df = display_df.set_index("id")
@@ -332,7 +376,7 @@ with tab1:
         "📥 Tải dữ liệu",
         type="primary",
         use_container_width=True,
-        disabled=ind_df.empty,
+        disabled=indicator_df.empty,
     )
 
     if load_clicked:
@@ -349,7 +393,12 @@ with tab1:
             country_list = ["all"]
         else:
             country_list = selected_country_codes
-        chosen_ids = [cid for cid in selected_indicator_ids if cid and is_valid_wb_id(cid)]
+        normalized_selection: List[str] = []
+        for raw_id in selected_indicator_ids:
+            mapped = raw_to_normalized.get(raw_id)
+            if mapped and mapped not in normalized_selection:
+                normalized_selection.append(mapped)
+        chosen_ids = [cid for cid in normalized_selection if cid and is_valid_wb_id(cid)]
         if not chosen_ids:
             st.error("Không có ID hợp lệ sau khi lọc.")
             st.stop()
