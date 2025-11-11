@@ -246,7 +246,7 @@ def handle_na(df: pd.DataFrame, method: str) -> pd.DataFrame:
 
 st.set_page_config(page_title="World Bank Indicators — Sửa python7", layout="wide")
 st.title("Công cụ tổng hợp và phân tích dữ liệu vĩ mô kết hợp AI")
-st.caption(" ")
+st.caption("Tìm indicator (World Bank, lọc ID hợp lệ) → Lấy dữ liệu qua API v2 → Bảng rộng: Năm, Country, chỉ số…")
 
 # ===== Sidebar: Tool tìm indicator, chọn năm, Xử lý N/A, Quốc gia =====
 with st.sidebar:
@@ -260,7 +260,21 @@ with st.sidebar:
         default=default_country,
         help="Có thể chọn nhiều quốc gia, mỗi lựa chọn đã hiển thị kèm mã ISO.",
     )
-    # Tìm indicator st.subheader("Tìm chỉ số (World Bank)") kw = st.text_input("Từ khoá", value="GDP") top_n = st.number_input("Top", 1, 500, 10, 1) do_search = st.button("🔍 Tìm indicator") if do_search: if not kw.strip(): st.warning("Nhập từ khoá trước khi tìm.") else: with st.spinner("Đang tìm indicators từ World Bank…"): df_ind = wb_search_indicators(kw.strip(), max_pages=1, top=int(top_n)) if top_n: df_ind = df_ind.head(int(top_n)) st.session_state["ind_search_df"] = df_ind
+    # Tìm indicator
+    st.subheader("Tìm chỉ số (World Bank)")
+    kw = st.text_input("Từ khoá", value="GDP")
+    top_n = st.number_input("Top", 1, 500, 50, 1)
+    do_search = st.button("🔍 Tìm indicator")
+
+    if do_search:
+        if not kw.strip():
+            st.warning("Nhập từ khoá trước khi tìm.")
+        else:
+            with st.spinner("Đang tìm indicators từ World Bank…"):
+                df_ind = wb_search_indicators(kw.strip(), max_pages=1, top=int(top_n))
+                if top_n:
+                    df_ind = df_ind.head(int(top_n))
+                st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
     col_from, col_to = st.columns(2)
@@ -281,7 +295,7 @@ with st.sidebar:
             step=1,
         )
     na_method = st.selectbox(
-        "Xử lý dữ liệu chỉ tiêu thiếu dữ liệu",
+        "Xử lý N/A",
         [
             "Giữ nguyên (N/A)",
             "Điền 0",
@@ -326,7 +340,7 @@ id_to_name = {
 }
 
 with tab1:
-    st.subheader("Chọn chỉ số để xuất dữ liệu")
+    st.subheader("Chọn chỉ số từ kết quả tìm kiếm")
     selected_indicator_ids: List[str] = []
     all_indicator_ids = indicator_df["id"].tolist() if not indicator_df.empty else []
     current_state = st.session_state.get("indicator_selection", {})
@@ -524,7 +538,7 @@ with tab5:
     if df.empty:
         st.info("Chưa có dữ liệu — hãy tải ở tab **Dữ liệu**.")
     else:
-        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank","Chủ Doanh nghiệp","Nhân viên Ngân hàng"])
+        target_audience = st.selectbox("Đối tượng tư vấn", ["Ngân hàng Agribank"])
         if genai is None or not (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY")):
             st.info("Chưa cấu hình GEMINI_API_KEY nên bỏ qua AI insight.")
         else:
@@ -532,7 +546,7 @@ with tab5:
                 try:
                     api_key = (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else os.environ.get("GEMINI_API_KEY"))
                     genai.configure(api_key=api_key)
-                    model_name = "gemini-2.5-flash"
+                    model_name = "gemini-2.5-pro"
                     model = genai.GenerativeModel(model_name)
                     data_csv = df.to_csv(index=False)
                     prompt = f"""
