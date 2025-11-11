@@ -68,7 +68,7 @@ def http_get_json(url: str, params: Dict[str, Any]) -> Any:
 # =========================
 # Indicator utilities
 # =========================
-_VALID_WB_ID = re.compile(r"^[A-Z][A-Z0-9]*(?:\.[A-Z0-9]+)+$")
+_VALID_WB_ID = re.compile(r"^[A-Z][A-Z0-9_.-]*$")
 
 
 def is_valid_wb_id(candidate: str) -> bool:
@@ -79,34 +79,55 @@ def is_valid_wb_id(candidate: str) -> bool:
 
 
 @st.cache_data(show_spinner=False, ttl=24*3600)
-def wb_search_indicators(keyword: str, max_pages: int = 2) -> pd.DataFrame:
-    results, page = [], 1
-    key = (keyword or "").strip().lower()
-    while page <= max_pages:
-        js = http_get_json(f"{WB_BASE}/indicator", {"format":"json","per_page":5000,"page":page})
-        if not isinstance(js, list) or len(js) < 2:
-            break
-        meta, data = js
-        per_page = int((meta or {}).get("per_page", 0) or 0)
-        total    = int((meta or {}).get("total", 0) or 0)
-        for it in (data or []):
-            _id, _name = it.get("id", ""), it.get("name", "")
-            _source = (it.get("source", {}) or {}).get("value", "")
-            if key and (key not in _name.lower() and key not in _id.lower()):
-                continue
-            if not is_valid_wb_id(_id):
-                continue
-            results.append({
+def wb_search_indicators(keyword: str, max_pages: int = 2, top: int = 50) -> pd.DataFrame:
+    """Vector search qua World Bank Data360 để lấy series mô tả."""
+    key = (keyword or "").strip()
+    if not key:
+        return pd.DataFrame()
+    payload = {
+        "count": True,
+        "select": "series_description/idno, series_description/name, series_description/database_id",
+        "search": key,
+        "top": int(top or 50),
+    }
+    try:
+        resp = requests.post(
+            "https://data360api.worldbank.org/data360/searchv2",
+            json=payload,
+            headers={**HEADERS, "Content-Type": "application/json"},
+            timeout=REQ_TIMEOUT,
+        )
+        resp.raise_for_status()
+        js = resp.json()
+    except Exception as exc:
+        st.error(f"Lỗi khi tìm chỉ số: {exc}")
+        return pd.DataFrame()
+
+    items = js.get("value", []) if isinstance(js, dict) else []
+    results = []
+    for it in items:
+        sd = (it or {}).get("series_description") or {}
+        _id = sd.get("idno", "").strip()
+        _name = sd.get("name", "").strip()
+        _source = sd.get("database_id", "").strip()
+        if not _id or not _name or not is_valid_wb_id(_id):
+            continue
+        results.append(
+            {
                 "id": _id,
                 "name": _name,
-                "unit": it.get("unit", ""),
-                "source": _source
-            })
-        if page * per_page >= total or per_page == 0:
-            break
-        page += 1
-    df = pd.DataFrame(results).drop_duplicates(subset=["id"]).sort_values("name").reset_index(drop=True)
-    return df
+                "unit": "",
+                "source": _source,
+            }
+        )
+    if not results:
+        return pd.DataFrame(columns=["id", "name", "unit", "source"])
+    return (
+        pd.DataFrame(results)
+        .drop_duplicates(subset=["id"])
+        .sort_values("name")
+        .reset_index(drop=True)
+    )
 
 # =========================
 # Fetch series
@@ -214,7 +235,7 @@ with st.sidebar:
             st.warning("Nhập từ khoá trước khi tìm.")
         else:
             with st.spinner("Đang tìm indicators từ World Bank…"):
-                df_ind = wb_search_indicators(kw.strip(), max_pages=3)
+                df_ind = wb_search_indicators(kw.strip(), max_pages=1, top=int(top_n))
                 if top_n:
                     df_ind = df_ind.head(int(top_n))
                 st.session_state["ind_search_df"] = df_ind
