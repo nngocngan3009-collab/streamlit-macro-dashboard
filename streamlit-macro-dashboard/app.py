@@ -31,6 +31,7 @@ BACKOFF     = 1.6
 DEFAULT_DATE_RANGE = (2000, 2024)
 
 COUNTRY_OPTIONS = [
+    ("Toàn cầu (ALL)", "all"),
     ("Việt Nam (VN)", "VN"),
     ("Hoa Kỳ (US)", "US"),
     ("Nhật Bản (JP)", "JP"),
@@ -39,8 +40,17 @@ COUNTRY_OPTIONS = [
     ("Hàn Quốc (KR)", "KR"),
     ("Trung Quốc (CN)", "CN"),
     ("Khu vực Euro (EUU)", "EUU"),
-    ("Toàn cầu (ALL)", "all"),
-    ("ALL", "all"),
+    ("Liên minh Châu Âu (EU)", "EU"),
+    ("Anh (GB)", "GB"),
+    ("Đức (DE)", "DE"),
+    ("Pháp (FR)", "FR"),
+    ("Canada (CA)", "CA"),
+    ("Úc (AU)", "AU"),
+    ("Ấn Độ (IN)", "IN"),
+    ("Indonesia (ID)", "ID"),
+    ("Malaysia (MY)", "MY"),
+    ("Philippines (PH)", "PH"),
+    ("Brazil (BR)", "BR"),
 ]
 COUNTRY_LABEL_TO_CODE = dict(COUNTRY_OPTIONS)
 
@@ -138,6 +148,7 @@ def wb_search_indicators(keyword: str, max_pages: int = 2, top: int = 50) -> pd.
         _name = sd.get("name", "").strip()
         _source = sd.get("database_id", "").strip()
         normalized = normalize_indicator_id(_id, _source)
+        score = it.get("@search.score")
         if not _id or not _name or not normalized:
             continue
         results.append(
@@ -147,14 +158,16 @@ def wb_search_indicators(keyword: str, max_pages: int = 2, top: int = 50) -> pd.
                 "name": _name,
                 "unit": "",
                 "source": _source,
+                "search_score": float(score) if isinstance(score, (int, float)) else None,
             }
         )
     if not results:
-        return pd.DataFrame(columns=["id", "normalized_id", "name", "unit", "source"])
+        return pd.DataFrame(columns=["id", "normalized_id", "name", "unit", "source", "search_score"])
+    df = pd.DataFrame(results)
+    df["search_score"] = pd.to_numeric(df["search_score"], errors="coerce").fillna(0.0)
     return (
-        pd.DataFrame(results)
-        .drop_duplicates(subset=["id"])
-        .sort_values("name")
+        df.drop_duplicates(subset=["id"])
+        .sort_values(["search_score", "name"], ascending=[False, True])
         .reset_index(drop=True)
     )
 
@@ -335,22 +348,21 @@ with tab1:
     if indicator_df.empty:
         st.info("Hãy dùng thanh bên trái để *Tìm indicator*. Toàn bộ chỉ số hợp lệ từ World Bank sẽ được hiển thị tại đây.")
     else:
-        display_df = indicator_df[["id", "name", "source"]].copy()
+        display_df = indicator_df[["id", "name"]].copy()
         state_filtered = {row["id"]: current_state.get(row["id"], False) for _, row in indicator_df.iterrows()}
-        display_df.insert(0, "STT", range(1, len(display_df) + 1))
-        display_df = display_df.rename(columns={"name": "Tên chỉ tiêu", "source": "Nguồn"})
-        display_df["Chọn"] = display_df["id"].map(state_filtered).fillna(False)
+        display_df.insert(0, "Chọn", display_df["id"].map(state_filtered).fillna(False))
+        display_df.insert(1, "STT", range(1, len(display_df) + 1))
+        display_df = display_df.rename(columns={"name": "Tên chỉ tiêu"})
         editor_df = display_df.set_index("id")
         edited_df = st.data_editor(
-            editor_df[["STT", "Tên chỉ tiêu", "Nguồn", "Chọn"]],
+            editor_df[["Chọn", "STT", "Tên chỉ tiêu"]],
             hide_index=True,
             use_container_width=True,
             height=260,
             column_config={
+                "Chọn": st.column_config.CheckboxColumn("Chọn", help="Tick để thêm vào danh sách tải"),
                 "STT": st.column_config.NumberColumn("STT", disabled=True),
                 "Tên chỉ tiêu": st.column_config.Column("Tên chỉ tiêu"),
-                "Nguồn": st.column_config.Column("Nguồn"),
-                "Chọn": st.column_config.CheckboxColumn("Chọn", help="Tick để thêm vào danh sách tải"),
             },
         )
         updated_state = {ind_id: bool(row["Chọn"]) for ind_id, row in edited_df.iterrows()}
