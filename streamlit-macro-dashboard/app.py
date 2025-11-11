@@ -260,31 +260,7 @@ with st.sidebar:
         default=default_country,
         help="Có thể chọn nhiều quốc gia, mỗi lựa chọn đã hiển thị kèm mã ISO.",
     )
-    # Tìm indicator
-st.subheader("Tìm chỉ số (World Bank)")
-
-# Thêm CSS để thay đổi màu của ô input
-st.markdown("""
-    <style>
-        .stTextInput>div>div>input {
-            background-color: #98FB98; /* Màu xanh lá */
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-kw = st.text_input("Từ khoá", value="GDP")
-top_n = st.number_input("Top", 1, 500, 10, 1)
-do_search = st.button("🔍 Tìm indicator")
-
-if do_search:
-    if not kw.strip():
-        st.warning("Nhập từ khoá trước khi tìm.")
-    else:
-        with st.spinner("Đang tìm indicators từ World Bank…"):
-            df_ind = wb_search_indicators(kw.strip(), max_pages=1, top=int(top_n))
-            if top_n:
-                df_ind = df_ind.head(int(top_n))
-            st.session_state["ind_search_df"] = df_ind
+    # Tìm indicator st.subheader("Tìm chỉ số (World Bank)") kw = st.text_input("Từ khoá", value="GDP") top_n = st.number_input("Top", 1, 500, 10, 1) do_search = st.button("🔍 Tìm indicator") if do_search: if not kw.strip(): st.warning("Nhập từ khoá trước khi tìm.") else: with st.spinner("Đang tìm indicators từ World Bank…"): df_ind = wb_search_indicators(kw.strip(), max_pages=1, top=int(top_n)) if top_n: df_ind = df_ind.head(int(top_n)) st.session_state["ind_search_df"] = df_ind
 
     # Khoảng năm + xử lý NA
     col_from, col_to = st.columns(2)
